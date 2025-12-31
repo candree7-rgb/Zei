@@ -10,8 +10,9 @@ from config import (
     CATEGORY, ACCOUNT_TYPE, QUOTE, LEVERAGE, RISK_PCT,
     ENTRY_EXPIRATION_MIN, ENTRY_TOO_FAR_PCT, ENTRY_TRIGGER_BUFFER_PCT, ENTRY_LIMIT_PRICE_OFFSET_PCT,
     ENTRY_EXPIRATION_PRICE_PCT,
-    TP_SPLITS, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
+    TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
+    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN
 )
@@ -260,6 +261,15 @@ class TradeEngine:
             self.log.info(f"SKIP {symbol} – beyond expiry-price rule (last={last}, trigger={trigger})")
             return None
 
+        # Check max SL distance - skip if SL is too far from entry
+        if MAX_SL_DISTANCE_PCT > 0:
+            sl_price = sig.get("sl_price")
+            if sl_price:
+                sl_distance_pct = abs(float(sl_price) - trigger) / trigger * 100
+                if sl_distance_pct > MAX_SL_DISTANCE_PCT:
+                    self.log.info(f"SKIP {symbol} – SL too far from entry ({sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%)")
+                    return None
+
         # Get instrument rules for price/qty rounding
         rules = self._get_instrument_rules(symbol)
         tick_size = rules["tick_size"]
@@ -383,12 +393,24 @@ class TradeEngine:
             self.log.info(f"📍 SL at {INITIAL_SL_PCT}% from entry: {sl_price}")
 
         tp_prices: List[float] = trade.get("tp_prices") or []
-        splits: List[float] = trade.get("tp_splits") or TP_SPLITS
 
         # Fallback TPs if signal has none
         if not tp_prices:
             tp_prices = self._generate_fallback_tps(entry, side, tick_size)
             self.log.info(f"Using fallback TPs for {symbol}: {tp_prices}")
+
+        # Calculate TP splits - either from config or auto-calculate based on TP count
+        if TP_SPLITS_AUTO:
+            # Auto-calculate equal splits based on number of TPs
+            tp_count = len(tp_prices)
+            if tp_count > 0:
+                split_pct = 100.0 / tp_count
+                splits = [split_pct] * tp_count
+                self.log.info(f"Auto-calculated TP splits for {tp_count} TPs: {splits}")
+            else:
+                splits = TP_SPLITS
+        else:
+            splits = trade.get("tp_splits") or TP_SPLITS
 
         # Store original TP percentages for recalculation after DCA
         tp_percentages = []
@@ -713,8 +735,49 @@ class TradeEngine:
                 tp_count = len(tr.get("tp_prices") or FALLBACK_TP_PCT)
                 self.log.info(f"🎯 TP{tp_num} HIT {tr['symbol']} ({tr['tp_fills']}/{tp_count})")
 
-            # TP1 -> SL to BE (use avg_entry if DCAs filled, otherwise entry_price)
-            if MOVE_SL_TO_BE_ON_TP1 and tp_num == 1 and not tr.get("sl_moved_to_be"):
+            # Follow-TP: Move SL to previous TP level after each TP hit
+            # OR just move to BE on TP1 (legacy behavior)
+            if FOLLOW_TP_ENABLED:
+                # Follow-TP mode: move SL progressively
+                tp_prices = tr.get("tp_prices") or []
+                side = tr.get("order_side")  # "Buy" or "Sell"
+                entry = float(tr.get("avg_entry") or tr.get("entry_price") or tr.get("trigger"))
+
+                if tp_num == 1:
+                    # TP1 hit -> SL to Entry (BE)
+                    new_sl = entry
+                    # Add buffer so BE is slightly in profit
+                    if BE_BUFFER_PCT > 0:
+                        if side == "Sell":  # SHORT
+                            new_sl = entry * (1 - BE_BUFFER_PCT / 100.0)
+                        else:  # LONG
+                            new_sl = entry * (1 + BE_BUFFER_PCT / 100.0)
+                    self._move_sl(tr["symbol"], new_sl)
+                    tr["sl_moved_to_be"] = True
+                    tr["last_sl_level"] = 0  # 0 = Entry/BE
+                    self.log.info(f"✅ SL -> BE {tr['symbol']} @ {new_sl:.6f} (TP1 hit)")
+                    # Cancel DCA orders on TP1
+                    self._cancel_dca_orders(tr)
+
+                elif tp_num > 1 and len(tp_prices) >= tp_num - 1:
+                    # TP2+ hit -> SL to previous TP level
+                    prev_tp = float(tp_prices[tp_num - 2])  # TP2 -> TP1, TP3 -> TP2, etc.
+
+                    # Add buffer to the TP level
+                    if FOLLOW_TP_BUFFER_PCT > 0:
+                        if side == "Sell":  # SHORT: SL should be ABOVE prev TP
+                            new_sl = prev_tp * (1 + FOLLOW_TP_BUFFER_PCT / 100.0)
+                        else:  # LONG: SL should be BELOW prev TP
+                            new_sl = prev_tp * (1 - FOLLOW_TP_BUFFER_PCT / 100.0)
+                    else:
+                        new_sl = prev_tp
+
+                    self._move_sl(tr["symbol"], new_sl)
+                    tr["last_sl_level"] = tp_num - 1
+                    self.log.info(f"✅ SL -> TP{tp_num-1} {tr['symbol']} @ {new_sl:.6f} (TP{tp_num} hit)")
+
+            elif MOVE_SL_TO_BE_ON_TP1 and tp_num == 1 and not tr.get("sl_moved_to_be"):
+                # Legacy behavior: only move to BE on TP1
                 be = float(tr.get("avg_entry") or tr.get("entry_price") or tr.get("trigger"))
                 # Add buffer so BE is slightly in profit (covers fees)
                 if BE_BUFFER_PCT > 0:
