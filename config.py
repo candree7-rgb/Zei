@@ -29,6 +29,9 @@ ACCOUNT_TYPE     = _get("ACCOUNT_TYPE","UNIFIED")  # UNIFIED / CONTRACT etc (dep
 # Bot identification (for multi-bot dashboard support)
 BOT_ID = _get("BOT_ID", "ao")  # Unique identifier for this bot instance
 
+# Signal Parser Version: "v1" = original embed format, "v2" = plain text format
+SIGNAL_PARSER_VERSION = _get("SIGNAL_PARSER_VERSION", "v1").lower()
+
 RECV_WINDOW = _get("RECV_WINDOW","5000")
 
 # Trading
@@ -57,12 +60,17 @@ INITIAL_SL_PCT = _get_float("INITIAL_SL_PCT","19.0")  # SL distance from entry i
 
 # TP_SPLITS: percentage of position to close at each TP level
 # Example: 30,30,30 means 90% total, leaving 10% as runner for trailing stop
+# For V2 signals with 3-5 TPs, use: 20,20,20,20,20 (adjust as needed)
 # DO NOT normalize - allow sum < 100% for runner positions
 TP_SPLITS = [float(x) for x in _get("TP_SPLITS","30,30,30").split(",") if x.strip()]
 if sum(TP_SPLITS) > 100.0:
     # Only normalize if over 100% (user error)
     s = sum(TP_SPLITS)
     TP_SPLITS = [x * 100.0 / s for x in TP_SPLITS]
+
+# TP_SPLITS_AUTO: if true, automatically calculate equal splits based on number of TPs
+# Example: 5 TPs = 20% each, 4 TPs = 25% each, 3 TPs = 33% each
+TP_SPLITS_AUTO = _get_bool("TP_SPLITS_AUTO", "false")
 
 # Fallback TP distances (% from entry) if signal has no TPs
 FALLBACK_TP_PCT = [float(x) for x in _get("FALLBACK_TP_PCT","0.85,1.65,4.0").split(",") if x.strip()]

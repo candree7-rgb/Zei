@@ -10,7 +10,7 @@ from config import (
     CATEGORY, ACCOUNT_TYPE, QUOTE, LEVERAGE, RISK_PCT,
     ENTRY_EXPIRATION_MIN, ENTRY_TOO_FAR_PCT, ENTRY_TRIGGER_BUFFER_PCT, ENTRY_LIMIT_PRICE_OFFSET_PCT,
     ENTRY_EXPIRATION_PRICE_PCT,
-    TP_SPLITS, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
+    TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN
@@ -383,12 +383,24 @@ class TradeEngine:
             self.log.info(f"📍 SL at {INITIAL_SL_PCT}% from entry: {sl_price}")
 
         tp_prices: List[float] = trade.get("tp_prices") or []
-        splits: List[float] = trade.get("tp_splits") or TP_SPLITS
 
         # Fallback TPs if signal has none
         if not tp_prices:
             tp_prices = self._generate_fallback_tps(entry, side, tick_size)
             self.log.info(f"Using fallback TPs for {symbol}: {tp_prices}")
+
+        # Calculate TP splits - either from config or auto-calculate based on TP count
+        if TP_SPLITS_AUTO:
+            # Auto-calculate equal splits based on number of TPs
+            tp_count = len(tp_prices)
+            if tp_count > 0:
+                split_pct = 100.0 / tp_count
+                splits = [split_pct] * tp_count
+                self.log.info(f"Auto-calculated TP splits for {tp_count} TPs: {splits}")
+            else:
+                splits = TP_SPLITS
+        else:
+            splits = trade.get("tp_splits") or TP_SPLITS
 
         # Store original TP percentages for recalculation after DCA
         tp_percentages = []

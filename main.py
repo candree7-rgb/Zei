@@ -11,11 +11,18 @@ from config import (
     MAX_CONCURRENT_TRADES, MAX_TRADES_PER_DAY, TC_MAX_LAG_SEC,
     POLL_SECONDS, POLL_JITTER_MAX,
     STATE_FILE, DRY_RUN, LOG_LEVEL,
-    TP_SPLITS, DCA_QTY_MULTS, INITIAL_SL_PCT
+    TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT,
+    SIGNAL_PARSER_VERSION
 )
 from bybit_v5 import BybitV5
 from discord_reader import DiscordReader
-from signal_parser import parse_signal, parse_signal_update, signal_hash
+
+# Import signal parser based on version
+if SIGNAL_PARSER_VERSION == "v2":
+    from signal_parser_v2 import parse_signal, parse_signal_update, signal_hash
+else:
+    from signal_parser import parse_signal, parse_signal_update, signal_hash
+
 from state import load_state, save_state, utc_day_key
 from trade_engine import TradeEngine
 import db_export
@@ -54,12 +61,13 @@ def main():
     mode_str += " | TESTNET" if BYBIT_TESTNET else ""
     log.info("Discord → Bybit Bot (One-way)" + mode_str)
     log.info("="*58)
+    log.info(f"Config: SIGNAL_PARSER={SIGNAL_PARSER_VERSION.upper()}")
     log.info(f"Config: CATEGORY={CATEGORY}, QUOTE={QUOTE}, LEVERAGE={LEVERAGE}x")
     log.info(f"Config: RISK_PCT={RISK_PCT}%, MAX_CONCURRENT={MAX_CONCURRENT_TRADES}, MAX_DAILY={MAX_TRADES_PER_DAY}")
     log.info(f"Config: POLL_SECONDS={POLL_SECONDS}, TC_MAX_LAG_SEC={TC_MAX_LAG_SEC}")
     log.info(f"Config: DRY_RUN={DRY_RUN}, LOG_LEVEL={LOG_LEVEL}")
-    log.info(f"Config: TP_SPLITS={TP_SPLITS}, DCA_QTY_MULTS={DCA_QTY_MULTS}")
-    log.info(f"Config: INITIAL_SL_PCT={INITIAL_SL_PCT}%")
+    log.info(f"Config: TP_SPLITS={TP_SPLITS}, TP_SPLITS_AUTO={TP_SPLITS_AUTO}")
+    log.info(f"Config: DCA_QTY_MULTS={DCA_QTY_MULTS}, INITIAL_SL_PCT={INITIAL_SL_PCT}%")
 
     # Initialize database if enabled
     if db_export.is_enabled():
