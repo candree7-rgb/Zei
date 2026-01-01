@@ -122,6 +122,33 @@ def main():
                     log.warning(f"   {tr.get('symbol')}: Empty message text")
                     continue
 
+                # Check if trade was CANCELLED in Discord signal
+                # This handles: "❌ TRADE CANCELLED", "TRADE CANCELLED", "Trade closed without entry"
+                if "TRADE CANCELLED" in txt.upper() or "CLOSED WITHOUT ENTRY" in txt.upper():
+                    log.warning(f"❌ Signal CANCELLED for {tr['symbol']} - cancelling all orders")
+                    trade_id = tr.get("id")
+
+                    if tr.get("status") == "pending":
+                        # Cancel entry order
+                        entry_oid = tr.get("entry_order_id")
+                        if entry_oid and entry_oid != "DRY_RUN":
+                            try:
+                                engine.cancel_entry(tr["symbol"], entry_oid)
+                                log.info(f"🗑️ Cancelled entry order for {tr['symbol']}")
+                            except Exception as e:
+                                log.debug(f"Could not cancel entry: {e}")
+
+                    # Cancel all TP/DCA orders if trade was open
+                    if tr.get("status") == "open":
+                        engine._cancel_all_trade_orders(tr)
+
+                    # Mark trade as cancelled
+                    tr["status"] = "cancelled"
+                    tr["exit_reason"] = "signal_cancelled"
+                    tr["closed_ts"] = time.time()
+                    log.info(f"✅ Trade {tr['symbol']} marked as cancelled")
+                    continue  # Skip other updates for this trade
+
                 # Parse only SL/DCA from updated signal (doesn't require "NEW SIGNAL")
                 sig = parse_signal_update(txt)
 
