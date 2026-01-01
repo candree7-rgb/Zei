@@ -174,6 +174,28 @@ def main():
                     else:
                         log.info(f"📝 SL saved for {tr['symbol']} (will apply on entry fill)")
 
+                # Check if TPs changed (either from empty/fallback to real TPs, or values changed)
+                new_tps = sig.get("tp_prices") or []
+                old_tps = tr.get("tp_prices") or []
+
+                # Compare TPs - update if new TPs are different and we have new values
+                tps_changed = False
+                if new_tps and len(new_tps) > 0:
+                    if len(new_tps) != len(old_tps):
+                        tps_changed = True
+                    elif any(abs(float(new_tps[i]) - float(old_tps[i])) > 0.0000001 for i in range(len(new_tps))):
+                        tps_changed = True
+
+                if tps_changed:
+                    log.info(f"🔄 Signal TPs changed for {tr['symbol']}: {old_tps} → {new_tps}")
+                    if is_open and tr.get("post_orders_placed"):
+                        # Update TP orders on Bybit
+                        engine.update_tp_orders(tr, new_tps)
+                    else:
+                        # Just save for later (entry not filled yet)
+                        tr["tp_prices"] = new_tps
+                        log.info(f"📝 TPs saved for {tr['symbol']} (will apply on entry fill)")
+
                 # Check if DCA added (was empty, now has value)
                 new_dcas = sig.get("dca_prices") or []
                 old_dcas = tr.get("dca_prices") or []

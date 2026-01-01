@@ -533,6 +533,9 @@ class TradeEngine:
                             trade.setdefault("tp_order_ids", {})[str(idx+1)] = oid
                             if idx == 0:
                                 trade["tp1_order_id"] = oid
+                        elif order_type == "DCA":
+                            trade.setdefault("dca_order_ids", {})[str(idx)] = oid
+                            self.log.info(f"✅ DCA{idx} placed for {symbol}")
                     except Exception as e:
                         self.log.warning(f"Order placement failed: {e}")
 
@@ -1388,6 +1391,131 @@ class TradeEngine:
                 db_export.update_daily_equity(equity, today_trades, today_wins, today_losses)
             except Exception as e:
                 self.log.debug(f"Failed to update daily equity: {e}")
+
+    def update_tp_orders(self, trade: Dict[str, Any], new_tp_prices: List[float]) -> bool:
+        """Update TP orders when signal TPs change (e.g., fallback TPs → real TPs).
+
+        Cancels existing TP orders and places new ones at correct prices.
+        Only updates TPs that haven't been filled yet.
+        """
+        symbol = trade["symbol"]
+        side = trade.get("order_side")  # "Sell" or "Buy"
+
+        # Get current position size
+        size, _avg = self.position_size_avg(symbol)
+        if size <= 0:
+            self.log.warning(f"Cannot update TPs: no position for {symbol}")
+            return False
+
+        # Get instrument rules
+        rules = self._get_instrument_rules(symbol)
+        tick_size = rules["tick_size"]
+        qty_step = rules["qty_step"]
+        min_qty = rules["min_qty"]
+
+        # Determine which TPs are already filled
+        filled_tps = trade.get("tp_fills_list", [])
+        tp_order_ids = trade.get("tp_order_ids", {})
+
+        # Calculate splits
+        if TP_SPLITS_AUTO:
+            tp_count = len(new_tp_prices)
+            if tp_count > 0:
+                split_pct = 100.0 / tp_count
+                splits = [split_pct] * tp_count
+            else:
+                splits = TP_SPLITS
+        else:
+            splits = trade.get("tp_splits") or TP_SPLITS
+
+        # Track version for unique orderLinkId
+        tp_version = trade.get("tp_version", 1) + 1
+        trade["tp_version"] = tp_version
+
+        old_tps = trade.get("tp_prices", [])
+        self.log.info(f"🔄 Updating TPs for {symbol}: {old_tps} → {new_tp_prices}")
+
+        cancelled_count = 0
+        placed_count = 0
+
+        for i, new_tp in enumerate(new_tp_prices):
+            tp_num = i + 1
+
+            # Skip already filled TPs
+            if tp_num in filled_tps:
+                self.log.debug(f"   TP{tp_num} already filled, skipping")
+                continue
+
+            # Skip if no split for this TP
+            if i >= len(splits) or splits[i] <= 0:
+                continue
+
+            # Cancel existing TP order
+            old_order_id = tp_order_ids.get(str(tp_num))
+            if old_order_id and not DRY_RUN:
+                try:
+                    self.bybit.cancel_order({
+                        "category": CATEGORY,
+                        "symbol": symbol,
+                        "orderId": old_order_id
+                    })
+                    cancelled_count += 1
+                    self.log.debug(f"   Cancelled old TP{tp_num}: {old_order_id}")
+                except Exception as e:
+                    # Order might already be filled or cancelled
+                    self.log.debug(f"   Could not cancel TP{tp_num}: {e}")
+
+            # Place new TP order
+            new_tp_rounded = self._round_price(float(new_tp), tick_size)
+            qty = self._round_qty(size * (splits[i] / 100.0), qty_step, min_qty)
+
+            body = {
+                "category": CATEGORY,
+                "symbol": symbol,
+                "side": _opposite_side(side),
+                "orderType": "Limit",
+                "qty": f"{qty}",
+                "price": f"{new_tp_rounded:.10f}",
+                "timeInForce": "GTC",
+                "reduceOnly": True,
+                "closeOnTrigger": False,
+                "orderLinkId": f"{trade['id']}:TP{tp_num}v{tp_version}",
+            }
+
+            if DRY_RUN:
+                self.log.info(f"   DRY_RUN new TP{tp_num}: {new_tp_rounded}")
+                placed_count += 1
+                continue
+
+            try:
+                resp = self.bybit.place_order(body)
+                new_oid = (resp.get("result") or {}).get("orderId")
+                if new_oid:
+                    tp_order_ids[str(tp_num)] = new_oid
+                    if tp_num == 1:
+                        trade["tp1_order_id"] = new_oid
+                    placed_count += 1
+                    self.log.info(f"   ✅ TP{tp_num}: {new_tp_rounded}")
+            except Exception as e:
+                self.log.warning(f"   ❌ Failed to place TP{tp_num}: {e}")
+
+        # Update trade with new TP prices
+        trade["tp_prices"] = new_tp_prices
+        trade["tp_order_ids"] = tp_order_ids
+
+        # Recalculate TP percentages for DCA recalculation
+        entry = float(trade.get("avg_entry") or trade.get("entry_price") or trade.get("trigger"))
+        tp_percentages = []
+        for tp in new_tp_prices:
+            if side == "Buy":
+                pct = (float(tp) / entry - 1)
+            else:
+                pct = (1 - float(tp) / entry)
+            tp_percentages.append(pct)
+        trade["tp_percentages"] = tp_percentages
+
+        self.log.info(f"✅ TPs updated for {symbol}: cancelled {cancelled_count}, placed {placed_count}")
+        return placed_count > 0
 
     def place_dca_orders(self, trade: Dict[str, Any]) -> bool:
         """Place DCA orders for a trade (called when DCA is added to signal after entry)."""
