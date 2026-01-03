@@ -333,7 +333,7 @@ def main():
                             log.debug(f"Message {mid}: not a signal")
                         continue
 
-                    log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']}")
+                    log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']} ({sig.get('leverage', '?')}x)")
                     log.info(f"   TPs: {sig.get('tp_prices', [])} | DCAs: {sig.get('dca_prices', [])} | SL: {sig.get('sl_price')}")
 
                     sh = signal_hash(sig)
