@@ -12,7 +12,7 @@ from config import (
     ENTRY_EXPIRATION_PRICE_PCT,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
-    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT,
+    FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID
 )
@@ -250,6 +250,13 @@ class TradeEngine:
             if active_trade and active_trade.get("bot_id") != BOT_ID:
                 other_bot = active_trade.get("bot_id")
                 self.log.info(f"⏭️  SKIP {symbol} – already managed by bot '{other_bot}' (symbol locked)")
+                return None
+
+        # Min signal leverage filter: Skip signals with low leverage (usually means wider SL)
+        if MIN_SIGNAL_LEVERAGE > 0:
+            signal_leverage = sig.get("leverage")
+            if signal_leverage and signal_leverage < MIN_SIGNAL_LEVERAGE:
+                self.log.info(f"⏭️  SKIP {symbol} – signal leverage {signal_leverage}x < {MIN_SIGNAL_LEVERAGE}x minimum")
                 return None
 
         # ensure leverage set
