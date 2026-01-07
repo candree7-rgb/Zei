@@ -367,6 +367,9 @@ def main():
                         log.warning(f"❌ Entry order failed for {sig['symbol']}")
                         continue
 
+                    # Get risk info for tracking
+                    risk_info = engine.get_risk_info()
+
                     # store trade
                     st.setdefault("open_trades", {})[trade_id] = {
                         "id": trade_id,
@@ -384,6 +387,9 @@ def main():
                         "base_qty": engine.calc_base_qty(sig["symbol"], float(sig["trigger"])),
                         "raw": sig.get("raw", ""),
                         "discord_msg_id": mid,  # Track message ID for updates
+                        "risk_pct": risk_info["risk_pct"],
+                        "risk_amount": risk_info["risk_amount"],
+                        "equity_at_entry": risk_info["equity_at_entry"],
                     }
                     inc_trades_today()
                     log.info(f"🟡 ENTRY PLACED {sig['symbol']} {sig['side'].upper()} trigger={sig['trigger']} (id={trade_id})")
