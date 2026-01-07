@@ -157,6 +157,26 @@ class TradeEngine:
         rules = self._get_instrument_rules(symbol)
         return self._round_qty(qty, rules["qty_step"], rules["min_qty"])
 
+    def get_risk_info(self) -> Dict[str, float]:
+        """Get current risk settings and calculated risk amount."""
+        try:
+            equity = self.bybit.wallet_equity(ACCOUNT_TYPE)
+            risk_amount = equity * (RISK_PCT / 100.0)
+            return {
+                "risk_pct": RISK_PCT,
+                "risk_amount": round(risk_amount, 2),
+                "equity_at_entry": round(equity, 2),
+                "leverage": LEVERAGE
+            }
+        except Exception as e:
+            self.log.warning(f"Could not get risk info: {e}")
+            return {
+                "risk_pct": RISK_PCT,
+                "risk_amount": 0,
+                "equity_at_entry": 0,
+                "leverage": LEVERAGE
+            }
+
     # ---------- entry gatekeepers ----------
     def _too_far(self, side: str, last: float, trigger: float, tp1: float = None) -> bool:
         """
