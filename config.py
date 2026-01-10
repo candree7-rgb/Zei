@@ -41,6 +41,25 @@ QUOTE    = _get("QUOTE","USDT").upper()
 LEVERAGE = _get_int("LEVERAGE","5")
 RISK_PCT = _get_float("RISK_PCT","5")
 
+# ============================================================
+# DYNAMIC POSITION SIZING (Risk-Based)
+# ============================================================
+# Calculate position size based on SL distance for consistent risk per trade
+# This is the mathematically optimal approach (Fixed Fractional / Kelly-lite)
+
+# Enable dynamic sizing (position size based on SL distance)
+DYNAMIC_SIZING_ENABLED = _get_bool("DYNAMIC_SIZING_ENABLED", "true")
+
+# Risk per trade as % of equity (how much you lose if SL hits)
+# 2% is conservative, 5% is aggressive
+RISK_PER_TRADE_PCT = _get_float("RISK_PER_TRADE_PCT", "2.0")
+
+# Maximum leverage to use (safety cap)
+MAX_LEVERAGE = _get_int("MAX_LEVERAGE", "50")
+
+# Minimum leverage (for very tight SL)
+MIN_LEVERAGE = _get_int("MIN_LEVERAGE", "5")
+
 # Limits / Safety
 MAX_CONCURRENT_TRADES = _get_int("MAX_CONCURRENT_TRADES","3")
 MAX_TRADES_PER_DAY    = _get_int("MAX_TRADES_PER_DAY","20")

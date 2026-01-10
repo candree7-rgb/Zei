@@ -15,7 +15,8 @@ from config import (
     FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT, CAP_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID,
-    LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT
+    LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT,
+    DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE
 )
 
 # Trend analysis for leg filtering
@@ -152,7 +153,7 @@ class TradeEngine:
         return float(f"{qty:.10f}")
 
     def calc_base_qty(self, symbol: str, entry_price: float) -> float:
-        # Risk model: margin = equity * RISK_PCT; notional = margin * LEVERAGE; qty = notional / price
+        """Legacy: Calculate qty with fixed leverage. Use calc_dynamic_position for SL-based sizing."""
         equity = self.bybit.wallet_equity(ACCOUNT_TYPE)
         margin = equity * (RISK_PCT / 100.0)
         notional = margin * LEVERAGE
@@ -161,24 +162,113 @@ class TradeEngine:
         rules = self._get_instrument_rules(symbol)
         return self._round_qty(qty, rules["qty_step"], rules["min_qty"])
 
-    def get_risk_info(self) -> Dict[str, float]:
+    def calc_dynamic_position(self, symbol: str, entry_price: float, sl_price: float, side: str) -> Dict[str, float]:
+        """
+        Calculate position size based on SL distance for consistent risk per trade.
+        This is the mathematically optimal approach (Fixed Fractional).
+
+        Formula:
+            sl_distance_pct = |entry - sl| / entry * 100
+            risk_amount = equity * RISK_PER_TRADE_PCT / 100
+            position_value = risk_amount / (sl_distance_pct / 100)
+            qty = position_value / entry_price
+            leverage = position_value / margin_available (capped at MAX_LEVERAGE)
+
+        Returns:
+            {"qty": float, "leverage": int, "position_value": float, "risk_amount": float, "sl_distance_pct": float}
+        """
+        equity = self.bybit.wallet_equity(ACCOUNT_TYPE)
+        rules = self._get_instrument_rules(symbol)
+
+        # Calculate SL distance
+        sl_distance = abs(entry_price - sl_price)
+        sl_distance_pct = (sl_distance / entry_price) * 100
+
+        # Fallback if SL distance is 0 or invalid
+        if sl_distance_pct <= 0:
+            sl_distance_pct = INITIAL_SL_PCT
+            self.log.warning(f"⚠️ Invalid SL distance, using fallback {INITIAL_SL_PCT}%")
+
+        # Calculate risk amount (what we lose if SL hits)
+        risk_amount = equity * (RISK_PER_TRADE_PCT / 100.0)
+
+        # Calculate position value needed for this risk
+        # If SL is 2% away, and we want to risk $20, position = $20 / 0.02 = $1000
+        position_value = risk_amount / (sl_distance_pct / 100.0)
+
+        # Calculate required leverage
+        # Leverage = Position Value / Margin Used
+        # We want to use RISK_PCT of equity as margin
+        margin_to_use = equity * (RISK_PCT / 100.0)
+        required_leverage = position_value / margin_to_use
+
+        # Cap leverage between MIN and MAX
+        leverage = max(MIN_LEVERAGE, min(int(required_leverage), MAX_LEVERAGE))
+
+        # Recalculate position with capped leverage
+        actual_position_value = margin_to_use * leverage
+        qty = actual_position_value / entry_price
+
+        # Round qty to instrument rules
+        qty = self._round_qty(qty, rules["qty_step"], rules["min_qty"])
+
+        # Recalculate actual risk with rounded qty
+        actual_position_value = qty * entry_price
+        actual_risk = actual_position_value * (sl_distance_pct / 100.0)
+
+        self.log.info(f"📊 Dynamic Sizing: SL {sl_distance_pct:.2f}% → Lev {leverage}x → Pos ${actual_position_value:.2f} → Risk ${actual_risk:.2f}")
+
+        return {
+            "qty": qty,
+            "leverage": leverage,
+            "position_value": round(actual_position_value, 2),
+            "risk_amount": round(actual_risk, 2),
+            "sl_distance_pct": round(sl_distance_pct, 2),
+            "equity": round(equity, 2)
+        }
+
+    def get_risk_info(self, sl_price: float = None, entry_price: float = None, side: str = None) -> Dict[str, float]:
         """Get current risk settings and calculated risk amount."""
         try:
             equity = self.bybit.wallet_equity(ACCOUNT_TYPE)
-            risk_amount = equity * (RISK_PCT / 100.0)
-            return {
-                "risk_pct": RISK_PCT,
-                "risk_amount": round(risk_amount, 2),
-                "equity_at_entry": round(equity, 2),
-                "leverage": LEVERAGE
-            }
+
+            if DYNAMIC_SIZING_ENABLED and sl_price and entry_price:
+                # Dynamic sizing based on SL
+                sl_distance = abs(entry_price - sl_price)
+                sl_distance_pct = (sl_distance / entry_price) * 100 if entry_price > 0 else INITIAL_SL_PCT
+                risk_amount = equity * (RISK_PER_TRADE_PCT / 100.0)
+
+                # Calculate leverage
+                position_value = risk_amount / (sl_distance_pct / 100.0) if sl_distance_pct > 0 else 0
+                margin_to_use = equity * (RISK_PCT / 100.0)
+                leverage = max(MIN_LEVERAGE, min(int(position_value / margin_to_use) if margin_to_use > 0 else LEVERAGE, MAX_LEVERAGE))
+
+                return {
+                    "risk_pct": RISK_PER_TRADE_PCT,
+                    "risk_amount": round(risk_amount, 2),
+                    "equity_at_entry": round(equity, 2),
+                    "leverage": leverage,
+                    "sl_distance_pct": round(sl_distance_pct, 2),
+                    "dynamic": True
+                }
+            else:
+                # Legacy fixed sizing
+                risk_amount = equity * (RISK_PCT / 100.0)
+                return {
+                    "risk_pct": RISK_PCT,
+                    "risk_amount": round(risk_amount, 2),
+                    "equity_at_entry": round(equity, 2),
+                    "leverage": LEVERAGE,
+                    "dynamic": False
+                }
         except Exception as e:
             self.log.warning(f"Could not get risk info: {e}")
             return {
                 "risk_pct": RISK_PCT,
                 "risk_amount": 0,
                 "equity_at_entry": 0,
-                "leverage": LEVERAGE
+                "leverage": LEVERAGE,
+                "dynamic": False
             }
 
     # ---------- entry gatekeepers ----------
@@ -285,12 +375,10 @@ class TradeEngine:
                 self.log.info(f"⏭️  SKIP {symbol} – signal leverage {signal_leverage}x < {MIN_SIGNAL_LEVERAGE}x minimum")
                 return None
 
-        # ensure leverage set
-        try:
-            if not DRY_RUN:
-                self.bybit.set_leverage(CATEGORY, symbol, LEVERAGE)
-        except Exception as e:
-            self.log.warning(f"set_leverage failed for {symbol}: {e}")
+        # Get SL price for position sizing
+        sl_price = sig.get("sl_price")
+        if sl_price:
+            sl_price = float(sl_price)
 
         last = self.bybit.last_price(CATEGORY, symbol)
         tp_prices = sig.get("tp_prices") or []
@@ -303,13 +391,11 @@ class TradeEngine:
             return None
 
         # Check max SL distance - skip if SL is too far from entry
-        if MAX_SL_DISTANCE_PCT > 0:
-            sl_price = sig.get("sl_price")
-            if sl_price:
-                sl_distance_pct = abs(float(sl_price) - trigger) / trigger * 100
-                if sl_distance_pct > MAX_SL_DISTANCE_PCT:
-                    self.log.info(f"SKIP {symbol} – SL too far from entry ({sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%)")
-                    return None
+        if MAX_SL_DISTANCE_PCT > 0 and sl_price:
+            sl_distance_pct = abs(sl_price - trigger) / trigger * 100
+            if sl_distance_pct > MAX_SL_DISTANCE_PCT:
+                self.log.info(f"SKIP {symbol} – SL too far from entry ({sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%)")
+                return None
 
         # ============================================================
         # TREND LEG FILTER (Zeiierman Strategy)
@@ -371,7 +457,30 @@ class TradeEngine:
                 limit_price = trigger * (1 - off)
         limit_price = self._round_price(limit_price, tick_size)
 
-        qty = self.calc_base_qty(symbol, trigger)
+        # ============================================================
+        # DYNAMIC POSITION SIZING (Risk-Based)
+        # ============================================================
+        # Calculate position size based on SL distance for consistent risk
+        if DYNAMIC_SIZING_ENABLED and sl_price:
+            position_info = self.calc_dynamic_position(symbol, trigger, sl_price, side)
+            qty = position_info["qty"]
+            dynamic_leverage = position_info["leverage"]
+
+            # Set the calculated leverage
+            try:
+                if not DRY_RUN:
+                    self.bybit.set_leverage(CATEGORY, symbol, dynamic_leverage)
+                    self.log.info(f"📊 Leverage set to {dynamic_leverage}x for {symbol}")
+            except Exception as e:
+                self.log.warning(f"set_leverage failed for {symbol}: {e}")
+        else:
+            # Legacy fixed sizing
+            qty = self.calc_base_qty(symbol, trigger)
+            try:
+                if not DRY_RUN:
+                    self.bybit.set_leverage(CATEGORY, symbol, LEVERAGE)
+            except Exception as e:
+                self.log.warning(f"set_leverage failed for {symbol}: {e}")
 
         # Check if price is very close to trigger (within 0.5%)
         # If so, place a direct limit order instead of conditional

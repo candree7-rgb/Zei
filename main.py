@@ -433,8 +433,10 @@ def main():
                             log.warning(f"❌ Entry order failed for {sig['symbol']}")
                             continue
 
-                        # Get risk info for tracking
-                        risk_info = engine.get_risk_info()
+                        # Get risk info for tracking (with SL for dynamic sizing)
+                        sl_price = float(sig.get("sl_price")) if sig.get("sl_price") else None
+                        entry_price = float(sig["trigger"])
+                        risk_info = engine.get_risk_info(sl_price=sl_price, entry_price=entry_price, side=sig["side"])
 
                         # store trade
                         st.setdefault("open_trades", {})[trade_id] = {
