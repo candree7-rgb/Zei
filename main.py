@@ -13,7 +13,9 @@ from config import (
     STATE_FILE, DRY_RUN, LOG_LEVEL,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT,
     SIGNAL_PARSER_VERSION,
-    FOLLOW_TP_ENABLED, MAX_SL_DISTANCE_PCT, CAP_SL_DISTANCE_PCT
+    FOLLOW_TP_ENABLED, MAX_SL_DISTANCE_PCT, CAP_SL_DISTANCE_PCT,
+    SIGNAL_BATCH_ENABLED, MAX_SIGNALS_PER_BATCH,
+    MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES
 )
 from bybit_v5 import BybitV5
 from discord_reader import DiscordReader
@@ -29,6 +31,7 @@ else:
 from state import load_state, save_state, utc_day_key
 from trade_engine import TradeEngine
 import db_export
+from signal_scorer import score_signals_batch, select_best_signals
 
 def setup_logger() -> logging.Logger:
     log = logging.getLogger("bot")
@@ -340,6 +343,13 @@ def main():
                 msgs_sorted = sorted(msgs, key=lambda m: int(m.get("id","0")))
                 max_seen = int(after or 0)
 
+                # ============================================================
+                # SIGNAL BATCH PROCESSING
+                # ============================================================
+                # Collect all valid signals, then score and pick the best one(s)
+                batch_signals = []  # List of (signal, msg_id) tuples
+                seen = set(st.get("seen_signal_hashes", []))
+
                 for m in msgs_sorted:
                     mid = int(m.get("id","0"))
                     max_seen = max(max_seen, mid)
@@ -368,58 +378,93 @@ def main():
                             log.debug(f"Message {mid}: not a signal")
                         continue
 
-                    log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']} ({sig.get('leverage', '?')}x)")
-                    log.info(f"   TPs: {sig.get('tp_prices', [])} | DCAs: {sig.get('dca_prices', [])} | SL: {sig.get('sl_price')}")
+                    log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']} ({sig.get('timeframe', '?')})")
+                    log.info(f"   TPs: {sig.get('tp_prices', [])} | SL: {sig.get('sl_price')}")
 
                     sh = signal_hash(sig)
-                    seen = set(st.get("seen_signal_hashes", []))
                     if sh in seen:
                         log.debug(f"Signal {sig['symbol']} already seen, skipping")
                         continue
 
-                    # mark seen early
+                    # Mark seen
                     seen.add(sh)
-                    st["seen_signal_hashes"] = list(seen)[-500:]
 
-                    trade_id = f"{sig['symbol']}|{sig['side']}|{int(time.time())}"
-                    log.info(f"🔄 Placing entry order for {sig['symbol']}...")
-                    oid = engine.place_conditional_entry(sig, trade_id)
-                    if not oid:
-                        log.warning(f"❌ Entry order failed for {sig['symbol']}")
-                        continue
+                    # Add to batch for scoring
+                    batch_signals.append((sig, mid))
 
-                    # Get risk info for tracking
-                    risk_info = engine.get_risk_info()
+                # Update seen hashes
+                st["seen_signal_hashes"] = list(seen)[-500:]
 
-                    # store trade
-                    st.setdefault("open_trades", {})[trade_id] = {
-                        "id": trade_id,
-                        "symbol": sig["symbol"],
-                        "order_side": "Sell" if sig["side"] == "sell" else "Buy",
-                        "pos_side": "Short" if sig["side"] == "sell" else "Long",
-                        "trigger": float(sig["trigger"]),
-                        "tp_prices": sig.get("tp_prices") or [],
-                        "tp_splits": None,  # engine uses config
-                        "dca_prices": sig.get("dca_prices") or [],
-                        "sl_price": sig.get("sl_price"),
-                        "entry_order_id": oid,
-                        "status": "pending",
-                        "placed_ts": time.time(),
-                        "base_qty": engine.calc_base_qty(sig["symbol"], float(sig["trigger"])),
-                        "raw": sig.get("raw", ""),
-                        "discord_msg_id": mid,  # Track message ID for updates
-                        "risk_pct": risk_info["risk_pct"],
-                        "risk_amount": risk_info["risk_amount"],
-                        "equity_at_entry": risk_info["equity_at_entry"],
-                        "leverage": risk_info["leverage"],
-                    }
-                    inc_trades_today()
-                    log.info(f"🟡 ENTRY PLACED {sig['symbol']} {sig['side'].upper()} trigger={sig['trigger']} (id={trade_id})")
+                # Process batch if we have signals
+                if batch_signals:
+                    log.info(f"📦 Batch: {len(batch_signals)} signal(s) to process")
 
-                    # stop if we hit limits mid-batch
-                    active = [tr for tr in st.get("open_trades", {}).values() if tr.get("status") in ("pending","open")]
-                    if len(active) >= MAX_CONCURRENT_TRADES or trades_today() >= MAX_TRADES_PER_DAY:
-                        break
+                    if SIGNAL_BATCH_ENABLED and len(batch_signals) > 1:
+                        # Score all signals and pick the best
+                        log.info("🎯 Scoring signals to find the best entry...")
+                        signals_only = [s for s, _ in batch_signals]
+                        msg_ids = {s.get("symbol"): mid for s, mid in batch_signals}
+
+                        scored = score_signals_batch(
+                            signals=signals_only,
+                            bybit=bybit,
+                            category=CATEGORY,
+                            max_allowed_leg=MAX_ALLOWED_LEG,
+                            swing_lookback=SWING_LOOKBACK,
+                            trend_candles=TREND_CANDLES,
+                            log=log
+                        )
+
+                        best_signals = select_best_signals(
+                            scored_signals=scored,
+                            max_count=MAX_SIGNALS_PER_BATCH,
+                            log=log
+                        )
+
+                        # Convert back to (signal, mid) tuples
+                        batch_signals = [(s, msg_ids.get(s.get("symbol"), 0)) for s in best_signals]
+
+                    # Execute selected signals
+                    for sig, mid in batch_signals:
+                        trade_id = f"{sig['symbol']}|{sig['side']}|{int(time.time())}"
+                        log.info(f"🔄 Placing entry order for {sig['symbol']}...")
+                        oid = engine.place_conditional_entry(sig, trade_id)
+                        if not oid:
+                            log.warning(f"❌ Entry order failed for {sig['symbol']}")
+                            continue
+
+                        # Get risk info for tracking
+                        risk_info = engine.get_risk_info()
+
+                        # store trade
+                        st.setdefault("open_trades", {})[trade_id] = {
+                            "id": trade_id,
+                            "symbol": sig["symbol"],
+                            "order_side": "Sell" if sig["side"] == "sell" else "Buy",
+                            "pos_side": "Short" if sig["side"] == "sell" else "Long",
+                            "trigger": float(sig["trigger"]),
+                            "tp_prices": sig.get("tp_prices") or [],
+                            "tp_splits": None,  # engine uses config
+                            "dca_prices": sig.get("dca_prices") or [],
+                            "sl_price": sig.get("sl_price"),
+                            "entry_order_id": oid,
+                            "status": "pending",
+                            "placed_ts": time.time(),
+                            "base_qty": engine.calc_base_qty(sig["symbol"], float(sig["trigger"])),
+                            "raw": sig.get("raw", ""),
+                            "discord_msg_id": mid,  # Track message ID for updates
+                            "risk_pct": risk_info["risk_pct"],
+                            "risk_amount": risk_info["risk_amount"],
+                            "equity_at_entry": risk_info["equity_at_entry"],
+                            "leverage": risk_info["leverage"],
+                        }
+                        inc_trades_today()
+                        log.info(f"🟡 ENTRY PLACED {sig['symbol']} {sig['side'].upper()} trigger={sig['trigger']} (id={trade_id})")
+
+                        # stop if we hit limits mid-batch
+                        active = [tr for tr in st.get("open_trades", {}).values() if tr.get("status") in ("pending","open")]
+                        if len(active) >= MAX_CONCURRENT_TRADES or trades_today() >= MAX_TRADES_PER_DAY:
+                            break
 
                 st["last_discord_id"] = str(max_seen) if max_seen else after
 

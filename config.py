@@ -107,6 +107,23 @@ TREND_CANDLES = _get_int("TREND_CANDLES", "200")
 # BUY should be in uptrend, SELL should be in downtrend
 REQUIRE_TREND_ALIGNMENT = _get_bool("REQUIRE_TREND_ALIGNMENT", "true")
 
+# ============================================================
+# SIGNAL BATCHING (Multiple signals at same time)
+# ============================================================
+# When multiple signals arrive at the same time (e.g., every 15 min),
+# collect them, analyze all, and pick the BEST one based on score.
+
+# Enable signal batching (analyze all, pick best)
+SIGNAL_BATCH_ENABLED = _get_bool("SIGNAL_BATCH_ENABLED", "true")
+
+# Time window to collect signals (seconds)
+# Signals within this window are batched together
+SIGNAL_BATCH_WINDOW_SEC = _get_int("SIGNAL_BATCH_WINDOW_SEC", "30")
+
+# Maximum signals to trade per batch (usually 1)
+# Set to 1 to only trade the best signal per batch
+MAX_SIGNALS_PER_BATCH = _get_int("MAX_SIGNALS_PER_BATCH", "1")
+
 # TP_SPLITS: percentage of position to close at each TP level
 # Example: 50,50 means 100% total (50% at TP1, 50% at TP2)
 # For V3 signals with 2 TPs, use: 50,50
