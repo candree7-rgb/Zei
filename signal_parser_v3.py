@@ -27,8 +27,8 @@ NUM = r"([0-9]+(?:\.[0-9]+)?)"
 # Timeframe: M15
 # ============================================================
 
-# ALLOWED TIMEFRAMES (only H1 and M15)
-ALLOWED_TIMEFRAMES = ["H1", "M15"]
+# ALLOWED TIMEFRAMES (H1, M15, and H4)
+ALLOWED_TIMEFRAMES = ["H1", "M15", "H4"]
 
 # ALLOWED QUOTE CURRENCIES (skip BTC, ETH pairs etc.)
 ALLOWED_QUOTES = ["USD", "USDT"]

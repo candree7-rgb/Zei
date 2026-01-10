@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS trades (
     -- Multi-bot support
     bot_id VARCHAR(50) DEFAULT 'ao',
 
+    -- Signal info (for performance analysis)
+    timeframe VARCHAR(10),  -- H1, M15, H4 etc.
+
     -- Metadata
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -60,6 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_is_win ON trades(is_win);
 CREATE INDEX IF NOT EXISTS idx_trades_bot_id ON trades(bot_id);
+CREATE INDEX IF NOT EXISTS idx_trades_timeframe ON trades(timeframe);
 CREATE INDEX IF NOT EXISTS idx_daily_equity_date ON daily_equity(date);
 
 -- Function to update updated_at timestamp
@@ -85,5 +89,15 @@ BEGIN
                    WHERE table_name = 'trades' AND column_name = 'bot_id') THEN
         ALTER TABLE trades ADD COLUMN bot_id VARCHAR(50) DEFAULT 'ao';
         CREATE INDEX IF NOT EXISTS idx_trades_bot_id ON trades(bot_id);
+    END IF;
+END $$;
+
+-- Migration: Add timeframe column if it doesn't exist
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'trades' AND column_name = 'timeframe') THEN
+        ALTER TABLE trades ADD COLUMN timeframe VARCHAR(10);
+        CREATE INDEX IF NOT EXISTS idx_trades_timeframe ON trades(timeframe);
     END IF;
 END $$;
