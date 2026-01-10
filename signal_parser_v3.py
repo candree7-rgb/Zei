@@ -2,6 +2,8 @@ import re
 import hashlib
 from typing import Any, Dict, Optional, List
 
+from config import ALLOWED_TIMEFRAMES
+
 NUM = r"([0-9]+(?:\.[0-9]+)?)"
 
 # ============================================================
@@ -27,8 +29,7 @@ NUM = r"([0-9]+(?:\.[0-9]+)?)"
 # Timeframe: M15
 # ============================================================
 
-# ALLOWED TIMEFRAMES (H1, M15, and H4)
-ALLOWED_TIMEFRAMES = ["H1", "M15", "H4"]
+# ALLOWED_TIMEFRAMES is imported from config.py (set via ENV)
 
 # ALLOWED QUOTE CURRENCIES (skip BTC, ETH pairs etc.)
 ALLOWED_QUOTES = ["USD", "USDT"]

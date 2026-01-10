@@ -32,6 +32,10 @@ BOT_ID = _get("BOT_ID", "ao")  # Unique identifier for this bot instance
 # Signal Parser Version: "v1" = original embed format, "v2" = AO plain text, "v3" = Crypto Signals (H1/M15)
 SIGNAL_PARSER_VERSION = _get("SIGNAL_PARSER_VERSION", "v3").lower()
 
+# Allowed timeframes for V3 signals (comma-separated)
+# Example: "H1,M15,H4" or just "H1,M15"
+ALLOWED_TIMEFRAMES = [x.strip().upper() for x in _get("ALLOWED_TIMEFRAMES", "H1,M15,H4").split(",") if x.strip()]
+
 RECV_WINDOW = _get("RECV_WINDOW","5000")
 
 # Trading
