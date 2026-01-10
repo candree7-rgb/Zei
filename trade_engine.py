@@ -14,8 +14,12 @@ from config import (
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
     FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT, CAP_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
-    DRY_RUN, BOT_ID
+    DRY_RUN, BOT_ID,
+    LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT
 )
+
+# Trend analysis for leg filtering
+from trend_analysis import analyze_trend, timeframe_to_interval
 
 def _opposite_side(side: str) -> str:
     return "Sell" if side == "Buy" else "Buy"
@@ -306,6 +310,48 @@ class TradeEngine:
                 if sl_distance_pct > MAX_SL_DISTANCE_PCT:
                     self.log.info(f"SKIP {symbol} – SL too far from entry ({sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%)")
                     return None
+
+        # ============================================================
+        # TREND LEG FILTER (Zeiierman Strategy)
+        # ============================================================
+        # Analyze price action to skip late-trend entries (Leg 4-5)
+        if LEG_FILTER_ENABLED and MAX_ALLOWED_LEG > 0:
+            try:
+                # Get timeframe from signal (H1, M15, etc.)
+                timeframe = sig.get("timeframe", "H1")
+                interval = timeframe_to_interval(timeframe)
+
+                # Fetch klines for trend analysis
+                self.log.info(f"📊 Analyzing trend for {symbol} ({timeframe})...")
+                candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
+
+                if candles and len(candles) >= 50:
+                    # Analyze trend and get recommendation
+                    analysis = analyze_trend(
+                        candles=candles,
+                        signal_side=sig["side"],
+                        max_allowed_leg=MAX_ALLOWED_LEG,
+                        swing_lookback=SWING_LOOKBACK,
+                        log=self.log
+                    )
+
+                    self.log.info(f"📊 Trend: {analysis.direction.value} | Leg: {analysis.current_leg} | Pullback: {analysis.is_pullback}")
+                    self.log.info(f"   → {analysis.recommendation}: {analysis.reason}")
+
+                    # Skip if recommendation is SKIP
+                    if analysis.recommendation == "SKIP":
+                        self.log.info(f"⏭️  SKIP {symbol} – {analysis.reason}")
+                        return None
+
+                    # Warn but continue if LATE
+                    if analysis.recommendation == "LATE":
+                        self.log.warning(f"⚠️ LATE entry {symbol} – {analysis.reason} (proceeding with caution)")
+
+                else:
+                    self.log.warning(f"⚠️ Not enough candles for trend analysis ({len(candles) if candles else 0}), proceeding anyway")
+
+            except Exception as e:
+                self.log.warning(f"⚠️ Trend analysis failed for {symbol}: {e} (proceeding anyway)")
 
         # Get instrument rules for price/qty rounding
         rules = self._get_instrument_rules(symbol)

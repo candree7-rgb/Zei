@@ -78,6 +78,35 @@ CAP_SL_DISTANCE_PCT = _get_float("CAP_SL_DISTANCE_PCT", "0")
 # Set to 0 to disable this filter (V3 signals have no leverage info)
 MIN_SIGNAL_LEVERAGE = _get_int("MIN_SIGNAL_LEVERAGE", "0")
 
+# ============================================================
+# TREND LEG FILTER (Zeiierman Strategy)
+# ============================================================
+# Analyzes price action to determine trend leg and skip late entries
+# Best entries: Leg 1-3 (early trend, after pullbacks #1-#2)
+# Skip: Leg 4-5 (late trend, higher reversal risk)
+
+# Enable/disable leg filter
+LEG_FILTER_ENABLED = _get_bool("LEG_FILTER_ENABLED", "true")
+
+# Maximum allowed leg for entry (1-3 recommended, 0 = disabled)
+# Leg 1-2: Best R:R, fresh momentum
+# Leg 3: Still good, but watch for exhaustion
+# Leg 4-5: Skip (late trend, "last flush" risk)
+MAX_ALLOWED_LEG = _get_int("MAX_ALLOWED_LEG", "3")
+
+# Swing detection lookback (how many candles to look on each side)
+# Higher = fewer swing points, more reliable but less sensitive
+# Lower = more swing points, more sensitive but more noise
+SWING_LOOKBACK = _get_int("SWING_LOOKBACK", "5")
+
+# Number of candles to fetch for trend analysis
+# More candles = better trend context, but slower
+TREND_CANDLES = _get_int("TREND_CANDLES", "200")
+
+# Skip signals where trend direction doesn't match signal side
+# BUY should be in uptrend, SELL should be in downtrend
+REQUIRE_TREND_ALIGNMENT = _get_bool("REQUIRE_TREND_ALIGNMENT", "true")
+
 # TP_SPLITS: percentage of position to close at each TP level
 # Example: 50,50 means 100% total (50% at TP1, 50% at TP2)
 # For V3 signals with 2 TPs, use: 50,50
