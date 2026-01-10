@@ -29,8 +29,8 @@ ACCOUNT_TYPE     = _get("ACCOUNT_TYPE","UNIFIED")  # UNIFIED / CONTRACT etc (dep
 # Bot identification (for multi-bot dashboard support)
 BOT_ID = _get("BOT_ID", "ao")  # Unique identifier for this bot instance
 
-# Signal Parser Version: "v1" = original embed format, "v2" = plain text format
-SIGNAL_PARSER_VERSION = _get("SIGNAL_PARSER_VERSION", "v1").lower()
+# Signal Parser Version: "v1" = original embed format, "v2" = AO plain text, "v3" = Crypto Signals (H1/M15)
+SIGNAL_PARSER_VERSION = _get("SIGNAL_PARSER_VERSION", "v3").lower()
 
 RECV_WINDOW = _get("RECV_WINDOW","5000")
 
@@ -75,14 +75,14 @@ CAP_SL_DISTANCE_PCT = _get_float("CAP_SL_DISTANCE_PCT", "0")
 
 # Min signal leverage filter: Skip signals where leverage in signal text is below this
 # AO Trading uses 25x for normal signals, 5x for risky ones (wider SL)
-# Set to 0 to disable this filter
-MIN_SIGNAL_LEVERAGE = _get_int("MIN_SIGNAL_LEVERAGE", "20")
+# Set to 0 to disable this filter (V3 signals have no leverage info)
+MIN_SIGNAL_LEVERAGE = _get_int("MIN_SIGNAL_LEVERAGE", "0")
 
 # TP_SPLITS: percentage of position to close at each TP level
-# Example: 30,30,30 means 90% total, leaving 10% as runner for trailing stop
-# For V2 signals with 3-5 TPs, use: 20,20,20,20,20 (adjust as needed)
+# Example: 50,50 means 100% total (50% at TP1, 50% at TP2)
+# For V3 signals with 2 TPs, use: 50,50
 # DO NOT normalize - allow sum < 100% for runner positions
-TP_SPLITS = [float(x) for x in _get("TP_SPLITS","30,30,30").split(",") if x.strip()]
+TP_SPLITS = [float(x) for x in _get("TP_SPLITS","50,50").split(",") if x.strip()]
 if sum(TP_SPLITS) > 100.0:
     # Only normalize if over 100% (user error)
     s = sum(TP_SPLITS)

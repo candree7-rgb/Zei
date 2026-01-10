@@ -19,7 +19,9 @@ from bybit_v5 import BybitV5
 from discord_reader import DiscordReader
 
 # Import signal parser based on version
-if SIGNAL_PARSER_VERSION == "v2":
+if SIGNAL_PARSER_VERSION == "v3":
+    from signal_parser_v3 import parse_signal, parse_signal_update, signal_hash
+elif SIGNAL_PARSER_VERSION == "v2":
     from signal_parser_v2 import parse_signal, parse_signal_update, signal_hash
 else:
     from signal_parser import parse_signal, parse_signal_update, signal_hash
