@@ -105,6 +105,22 @@ def init_database() -> bool:
             cur.execute(migration_sql)
             conn.commit()
 
+            # Migration: Add timeframe column if table already exists
+            migration_timeframe = """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'trades') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                   WHERE table_name = 'trades' AND column_name = 'timeframe') THEN
+                        ALTER TABLE trades ADD COLUMN timeframe VARCHAR(10);
+                        CREATE INDEX IF NOT EXISTS idx_trades_timeframe ON trades(timeframe);
+                    END IF;
+                END IF;
+            END $$;
+            """
+            cur.execute(migration_timeframe)
+            conn.commit()
+
             # Read schema file
             schema_path = os.path.join(os.path.dirname(__file__), "database", "schema.sql")
             if not os.path.exists(schema_path):
