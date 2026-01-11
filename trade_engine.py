@@ -13,6 +13,7 @@ from config import (
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT, FALLBACK_TP_PCT,
     MOVE_SL_TO_BE_ON_TP1, BE_BUFFER_PCT,
     FOLLOW_TP_ENABLED, FOLLOW_TP_BUFFER_PCT, MAX_SL_DISTANCE_PCT, CAP_SL_DISTANCE_PCT, MIN_SIGNAL_LEVERAGE,
+    MIN_RR_TP1,
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID,
     LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT,
@@ -466,6 +467,18 @@ class TradeEngine:
             if sl_distance_pct > MAX_SL_DISTANCE_PCT:
                 self.log.info(f"SKIP {symbol} – SL too far from entry ({sl_distance_pct:.1f}% > {MAX_SL_DISTANCE_PCT}%)")
                 return None
+
+        # Check minimum R:R for TP1 - skip poor R:R signals
+        if MIN_RR_TP1 > 0 and sl_price and tp1:
+            risk = abs(trigger - sl_price)
+            reward_tp1 = abs(tp1 - trigger)
+            if risk > 0:
+                rr_tp1 = reward_tp1 / risk
+                if rr_tp1 < MIN_RR_TP1:
+                    self.log.info(f"⏭️  SKIP {symbol} – R:R TP1 too low ({rr_tp1:.2f}:1 < {MIN_RR_TP1}:1)")
+                    return None
+                else:
+                    self.log.debug(f"R:R TP1 OK: {rr_tp1:.2f}:1 >= {MIN_RR_TP1}:1")
 
         # ============================================================
         # TREND LEG FILTER (Zeiierman Strategy)

@@ -111,6 +111,12 @@ FOLLOW_TP_BUFFER_PCT = _get_float("FOLLOW_TP_BUFFER_PCT", "0.1")  # Buffer above
 # Set to 0 to disable this filter
 MAX_SL_DISTANCE_PCT = _get_float("MAX_SL_DISTANCE_PCT", "0")
 
+# Minimum Risk:Reward ratio for TP1
+# Skip signals where TP1 R:R is below this threshold
+# At 73% winrate, break-even is ~0.37:1, so 0.5:1 is safe minimum
+# Set to 0 to disable this filter
+MIN_RR_TP1 = _get_float("MIN_RR_TP1", "0.5")
+
 # Cap SL distance: If signal SL is further than X%, cap it at X%
 # Unlike MAX_SL_DISTANCE_PCT (which skips), this ADJUSTS the SL to be closer
 # Set to 0 to disable (use signal's SL as-is)
