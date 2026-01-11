@@ -4,12 +4,15 @@ import random
 import threading
 import logging
 
+from datetime import datetime, timedelta
+
 from config import (
     DISCORD_TOKEN, CHANNEL_ID,
     BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_TESTNET, BYBIT_DEMO, RECV_WINDOW,
     CATEGORY, QUOTE, LEVERAGE, RISK_PCT,
     MAX_CONCURRENT_TRADES, MAX_TRADES_PER_DAY, TC_MAX_LAG_SEC,
     POLL_SECONDS, POLL_JITTER_MAX, SIGNAL_UPDATE_INTERVAL_SEC,
+    POLL_QUARTER_HOUR, POLL_QUARTER_BUFFER_SEC,
     STATE_FILE, DRY_RUN, LOG_LEVEL,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT,
     SIGNAL_PARSER_VERSION,
@@ -42,6 +45,27 @@ def setup_logger() -> logging.Logger:
     log.handlers[:] = [h]
     return log
 
+
+def seconds_until_next_quarter_hour(buffer_sec: int = 3) -> tuple[float, datetime]:
+    """
+    Calculate seconds until next quarter hour (XX:00, XX:15, XX:30, XX:45) + buffer.
+    Returns (seconds_to_wait, next_poll_time).
+    """
+    now = datetime.now()
+    minute = now.minute
+
+    # Find next quarter hour
+    next_quarter = ((minute // 15) + 1) * 15
+
+    if next_quarter >= 60:
+        # Next hour
+        next_time = now.replace(minute=0, second=buffer_sec, microsecond=0) + timedelta(hours=1)
+    else:
+        next_time = now.replace(minute=next_quarter, second=buffer_sec, microsecond=0)
+
+    wait_seconds = (next_time - now).total_seconds()
+    return max(0, wait_seconds), next_time
+
 def main():
     log = setup_logger()
 
@@ -70,7 +94,8 @@ def main():
     log.info(f"Config: SIGNAL_PARSER={SIGNAL_PARSER_VERSION.upper()}")
     log.info(f"Config: CATEGORY={CATEGORY}, QUOTE={QUOTE}, LEVERAGE={LEVERAGE}x")
     log.info(f"Config: RISK_PCT={RISK_PCT}%, MAX_CONCURRENT={MAX_CONCURRENT_TRADES}, MAX_DAILY={MAX_TRADES_PER_DAY}")
-    log.info(f"Config: POLL_SECONDS={POLL_SECONDS}, TC_MAX_LAG_SEC={TC_MAX_LAG_SEC}")
+    poll_mode = f"QUARTER_HOUR (+{POLL_QUARTER_BUFFER_SEC}s)" if POLL_QUARTER_HOUR else f"{POLL_SECONDS}s"
+    log.info(f"Config: POLL_MODE={poll_mode}, TC_MAX_LAG_SEC={TC_MAX_LAG_SEC}")
     log.info(f"Config: DRY_RUN={DRY_RUN}, LOG_LEVEL={LOG_LEVEL}")
     log.info(f"Config: TP_SPLITS={TP_SPLITS}, TP_SPLITS_AUTO={TP_SPLITS_AUTO}")
     log.info(f"Config: DCA_QTY_MULTS={DCA_QTY_MULTS}, INITIAL_SL_PCT={INITIAL_SL_PCT}%")
@@ -480,7 +505,15 @@ def main():
             log.exception(f"Loop error: {e}")
             time.sleep(3)
 
-        time.sleep(max(1, POLL_SECONDS + random.uniform(0, max(0, POLL_JITTER_MAX))))
+        # Sleep until next poll
+        if POLL_QUARTER_HOUR:
+            # Quarter-hour mode: sleep until XX:00, XX:15, XX:30, XX:45 + buffer
+            wait_sec, next_time = seconds_until_next_quarter_hour(POLL_QUARTER_BUFFER_SEC)
+            log.info(f"💤 Next poll at {next_time.strftime('%H:%M:%S')} (in {wait_sec:.0f}s)")
+            time.sleep(wait_sec)
+        else:
+            # Regular interval polling
+            time.sleep(max(1, POLL_SECONDS + random.uniform(0, max(0, POLL_JITTER_MAX))))
 
 if __name__ == "__main__":
     main()

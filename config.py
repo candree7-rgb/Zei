@@ -179,6 +179,11 @@ POLL_SECONDS    = _get_int("POLL_SECONDS","15")
 POLL_JITTER_MAX = _get_int("POLL_JITTER_MAX","5")
 SIGNAL_UPDATE_INTERVAL_SEC = _get_int("SIGNAL_UPDATE_INTERVAL_SEC", "15")  # How often to re-check signals for SL/TP/DCA updates
 
+# Quarter-hour polling mode (for signal providers that only send at XX:00, XX:15, XX:30, XX:45)
+# When enabled, bot sleeps until next quarter-hour + buffer instead of polling every POLL_SECONDS
+POLL_QUARTER_HOUR = _get_bool("POLL_QUARTER_HOUR", "true")  # Enable quarter-hour polling
+POLL_QUARTER_BUFFER_SEC = _get_int("POLL_QUARTER_BUFFER_SEC", "3")  # Seconds after quarter-hour to poll (e.g., 3 = poll at XX:00:03)
+
 # Misc
 DRY_RUN     = _get_bool("DRY_RUN","true")
 STATE_FILE  = _get("STATE_FILE","state.json")
