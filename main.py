@@ -25,11 +25,13 @@ from discord_reader import DiscordReader
 
 # Import signal parser based on version
 if SIGNAL_PARSER_VERSION == "v3":
-    from signal_parser_v3 import parse_signal, parse_signal_update, signal_hash
+    from signal_parser_v3 import parse_signal, parse_all_signals, parse_signal_update, signal_hash
 elif SIGNAL_PARSER_VERSION == "v2":
     from signal_parser_v2 import parse_signal, parse_signal_update, signal_hash
+    parse_all_signals = lambda text, quote: [s] if (s := parse_signal(text, quote)) else []
 else:
     from signal_parser import parse_signal, parse_signal_update, signal_hash
+    parse_all_signals = lambda text, quote: [s] if (s := parse_signal(text, quote)) else []
 
 from state import load_state, save_state, utc_day_key
 from trade_engine import TradeEngine
@@ -394,8 +396,9 @@ def main():
                     # Log first 200 chars of message for debugging
                     log.debug(f"Message {mid}: {txt[:200]}...")
 
-                    sig = parse_signal(txt, quote=QUOTE)
-                    if not sig:
+                    # Parse all signals from message (handles multi-signal messages)
+                    signals = parse_all_signals(txt, quote=QUOTE)
+                    if not signals:
                         # Check if it looks like a signal but failed to parse
                         if "SIGNAL" in txt.upper() or "ENTRY" in txt.upper():
                             log.warning(f"⚠️ Possible signal NOT parsed: {txt[:300]}...")
@@ -403,19 +406,21 @@ def main():
                             log.debug(f"Message {mid}: not a signal")
                         continue
 
-                    log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']} ({sig.get('timeframe', '?')})")
-                    log.info(f"   TPs: {sig.get('tp_prices', [])} | SL: {sig.get('sl_price')}")
+                    # Process each signal from the message
+                    for sig in signals:
+                        log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']} ({sig.get('timeframe', '?')})")
+                        log.info(f"   TPs: {sig.get('tp_prices', [])} | SL: {sig.get('sl_price')}")
 
-                    sh = signal_hash(sig)
-                    if sh in seen:
-                        log.debug(f"Signal {sig['symbol']} already seen, skipping")
-                        continue
+                        sh = signal_hash(sig)
+                        if sh in seen:
+                            log.debug(f"Signal {sig['symbol']} already seen, skipping")
+                            continue
 
-                    # Mark seen
-                    seen.add(sh)
+                        # Mark seen
+                        seen.add(sh)
 
-                    # Add to batch for scoring
-                    batch_signals.append((sig, mid))
+                        # Add to batch for scoring
+                        batch_signals.append((sig, mid))
 
                 # Update seen hashes
                 st["seen_signal_hashes"] = list(seen)[-500:]
