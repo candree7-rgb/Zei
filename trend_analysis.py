@@ -182,18 +182,55 @@ def classify_swing_sequence(swings: List[SwingPoint]) -> Tuple[TrendDirection, L
     return TrendDirection.NEUTRAL, labels
 
 
+def find_trend_start_index(labels: List[str], direction: TrendDirection) -> int:
+    """
+    Find where the current trend started (last reversal point).
+
+    For Uptrend: Find last occurrence of LL before HH/HL pattern started
+    For Downtrend: Find last occurrence of HH before LH/LL pattern started
+
+    Returns:
+        Index in labels where current trend started
+    """
+    if not labels or direction == TrendDirection.NEUTRAL:
+        return 0
+
+    # Walk backwards to find where trend changed
+    if direction == TrendDirection.UP:
+        # Find last LL (end of previous downtrend)
+        for i in range(len(labels) - 1, -1, -1):
+            if labels[i] == "LL":
+                return i + 1  # Trend starts after last LL
+        # No LL found - check for LH (also indicates previous downtrend)
+        for i in range(len(labels) - 1, -1, -1):
+            if labels[i] == "LH":
+                return i + 1
+
+    elif direction == TrendDirection.DOWN:
+        # Find last HH (end of previous uptrend)
+        for i in range(len(labels) - 1, -1, -1):
+            if labels[i] == "HH":
+                return i + 1  # Trend starts after last HH
+        # No HH found - check for HL (also indicates previous uptrend)
+        for i in range(len(labels) - 1, -1, -1):
+            if labels[i] == "HL":
+                return i + 1
+
+    return 0
+
+
 def count_legs(swings: List[SwingPoint], labels: List[str], direction: TrendDirection) -> Tuple[int, bool]:
     """
-    Count trend legs based on swing sequence.
+    Count trend legs based on swing sequence SINCE TREND STARTED.
 
     For Uptrend:
-    - Leg 1: First HH after trend starts
+    - Leg 1: First HH after trend reversal
     - Pullback: HL after HH
     - Leg 2: Next HH after pullback
     - etc.
 
     For Downtrend:
-    - Leg 1: First LL after trend starts
+    - Leg 1: First LL after trend reversal
     - Pullback: LH after LL
     - Leg 2: Next LL after pullback
     - etc.
@@ -204,12 +241,18 @@ def count_legs(swings: List[SwingPoint], labels: List[str], direction: TrendDire
     if not labels or direction == TrendDirection.NEUTRAL:
         return 0, False
 
+    # Find where current trend started
+    trend_start = find_trend_start_index(labels, direction)
+
+    # Only count legs from trend start
+    relevant_labels = labels[trend_start:]
+
     leg_count = 0
     in_pullback = False
 
     if direction == TrendDirection.UP:
         # Count HH as legs, HL as pullbacks
-        for label in labels:
+        for label in relevant_labels:
             if label == "HH":
                 leg_count += 1
                 in_pullback = False
@@ -218,12 +261,16 @@ def count_legs(swings: List[SwingPoint], labels: List[str], direction: TrendDire
 
     elif direction == TrendDirection.DOWN:
         # Count LL as legs, LH as pullbacks
-        for label in labels:
+        for label in relevant_labels:
             if label == "LL":
                 leg_count += 1
                 in_pullback = False
             elif label == "LH":
                 in_pullback = True
+
+    # Minimum leg 1 if we have any trend structure
+    if leg_count == 0 and len(relevant_labels) > 0:
+        leg_count = 1
 
     return leg_count, in_pullback
 
@@ -265,12 +312,17 @@ def analyze_trend(
     # Classify swing sequence
     direction, labels = classify_swing_sequence(swings)
 
+    # Find trend start for logging
+    trend_start_idx = find_trend_start_index(labels, direction)
+    relevant_labels = labels[trend_start_idx:] if trend_start_idx < len(labels) else []
+
     # Count legs
     current_leg, is_pullback = count_legs(swings, labels, direction)
 
     if log:
         log.info(f"📊 Trend Analysis: {direction.value}, Leg {current_leg}, Pullback={is_pullback}")
-        log.info(f"   Swing sequence (last 10): {labels[-10:]}")
+        log.info(f"   Full swing sequence: {labels[-15:]}")
+        log.info(f"   Trend started at index {trend_start_idx}, counting from: {relevant_labels}")
 
     # Validate signal against trend
     # BUY signal should be in UPTREND
