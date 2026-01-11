@@ -137,6 +137,12 @@ LEG_FILTER_ENABLED = _get_bool("LEG_FILTER_ENABLED", "true")
 # Leg 4-5: Skip (late trend, "last flush" risk)
 MAX_ALLOWED_LEG = _get_int("MAX_ALLOWED_LEG", "3")
 
+# Only enter during pullbacks (highest winrate, fewer trades)
+# Pullback = price retraced after impulse move (HL in uptrend, LH in downtrend)
+# When true: Only enter when is_pullback=True (best R:R entries)
+# When false: Enter on any Leg 1-3 (more trades, slightly lower winrate)
+REQUIRE_PULLBACK_ENTRY = _get_bool("REQUIRE_PULLBACK_ENTRY", "false")
+
 # Swing detection lookback (how many candles to look on each side)
 # Higher = fewer swing points, more reliable but less sensitive
 # Lower = more swing points, more sensitive but more noise

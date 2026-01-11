@@ -16,7 +16,7 @@ from config import (
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID,
     LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT,
-    HTF_ALIGNMENT_ENABLED,
+    HTF_ALIGNMENT_ENABLED, REQUIRE_PULLBACK_ENTRY,
     DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
     get_entry_expiration
 )
@@ -502,6 +502,11 @@ class TradeEngine:
                     # Warn but continue if LATE
                     if analysis.recommendation == "LATE":
                         self.log.warning(f"⚠️ LATE entry {symbol} – {analysis.reason} (proceeding with caution)")
+
+                    # Optional: Only enter during pullbacks (highest quality entries)
+                    if REQUIRE_PULLBACK_ENTRY and not analysis.is_pullback:
+                        self.log.info(f"⏭️  SKIP {symbol} – Not in pullback (REQUIRE_PULLBACK_ENTRY=true)")
+                        return None
 
                 else:
                     self.log.warning(f"⚠️ Not enough candles for trend analysis ({len(candles) if candles else 0}), proceeding anyway")
