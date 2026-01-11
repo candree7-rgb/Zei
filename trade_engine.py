@@ -1193,6 +1193,65 @@ class TradeEngine:
             self.log.warning(f"Failed to set trailing for {symbol}: {e}")
 
     # ---------- maintenance ----------
+    def check_entry_fills_fallback(self) -> None:
+        """Polling fallback: Check if pending entries have filled but WebSocket missed it.
+
+        This is critical for direct limit orders placed when price is at entry level.
+        """
+        if DRY_RUN:
+            return
+
+        for tid, tr in list(self.state.get("open_trades", {}).items()):
+            if tr.get("status") != "pending":
+                continue
+
+            symbol = tr["symbol"]
+
+            try:
+                # Check if we have an open position for this symbol
+                size, avg_price = self.position_size_avg(symbol)
+
+                if size > 0:
+                    # Position exists! Entry was filled but WebSocket missed it
+                    self.log.info(f"🔍 Fallback detected filled entry for {symbol} (size={size}, avg={avg_price})")
+
+                    tr["status"] = "open"
+                    tr["entry_price"] = avg_price
+                    tr["filled_ts"] = time.time()
+                    tr.setdefault("dca_fills", 0)
+                    tr.setdefault("tp_fills", 0)
+                    tr.setdefault("tp_fills_list", [])
+
+                    self.log.info(f"✅ ENTRY FILLED (fallback) {symbol} @ {avg_price}")
+
+                    # Place post-entry orders NOW
+                    try:
+                        self.place_post_entry_orders(tr)
+                    except Exception as e:
+                        self.log.warning(f"Post-entry orders failed for {symbol}: {e}")
+
+            except Exception as e:
+                self.log.debug(f"Entry fill check failed for {symbol}: {e}")
+
+    def check_pending_post_orders(self) -> None:
+        """Check if any open trades are missing their post-entry orders (SL, TPs)."""
+        if DRY_RUN:
+            return
+
+        for tid, tr in list(self.state.get("open_trades", {}).items()):
+            if tr.get("status") != "open":
+                continue
+            if tr.get("post_orders_placed"):
+                continue
+
+            symbol = tr["symbol"]
+            self.log.info(f"🔧 Placing missing post-entry orders for {symbol}")
+
+            try:
+                self.place_post_entry_orders(tr)
+            except Exception as e:
+                self.log.warning(f"Failed to place post-entry orders for {symbol}: {e}")
+
     def check_tp_fills_fallback(self) -> None:
         """Polling fallback: Check if TP1 was filled OR price went through TP1 level.
 

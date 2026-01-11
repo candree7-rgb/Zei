@@ -502,6 +502,24 @@ def main():
 
                 st["last_discord_id"] = str(max_seen) if max_seen else after
 
+                # Quick check for immediate fills (direct limit orders can fill instantly)
+                # This is critical for 15-min polling - don't wait to place SL/TPs!
+                if batch_signals:
+                    time.sleep(1)  # Brief pause to let orders fill
+                    for tid, tr in list(st.get("open_trades", {}).items()):
+                        if tr.get("status") == "pending":
+                            sz, avg = engine.position_size_avg(tr["symbol"])
+                            if sz > 0 and avg > 0:
+                                tr["status"] = "open"
+                                tr["entry_price"] = avg
+                                tr["filled_ts"] = time.time()
+                                tr.setdefault("dca_fills", 0)
+                                tr.setdefault("tp_fills", 0)
+                                tr.setdefault("tp_fills_list", [])
+                                log.info(f"✅ ENTRY FILLED (immediate) {tr['symbol']} @ {avg}")
+                        if tr.get("status") == "open" and not tr.get("post_orders_placed"):
+                            engine.place_post_entry_orders(tr)
+
             save_state(STATE_FILE, st)
 
         except KeyboardInterrupt:
