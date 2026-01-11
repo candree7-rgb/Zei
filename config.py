@@ -151,6 +151,14 @@ TREND_CANDLES = _get_int("TREND_CANDLES", "200")
 REQUIRE_TREND_ALIGNMENT = _get_bool("REQUIRE_TREND_ALIGNMENT", "true")
 
 # ============================================================
+# HIGHER TIMEFRAME ALIGNMENT (for 80%+ winrate)
+# ============================================================
+# Check if Higher TimeFrame trend aligns with signal direction
+# M15/H1 signals check H4 trend, H4 signals check D1 trend
+# Filters out counter-trend bounces (like bear rallies)
+HTF_ALIGNMENT_ENABLED = _get_bool("HTF_ALIGNMENT_ENABLED", "true")
+
+# ============================================================
 # SIGNAL BATCHING (Multiple signals at same time)
 # ============================================================
 # When multiple signals arrive at the same time (e.g., every 15 min),

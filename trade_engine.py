@@ -16,12 +16,13 @@ from config import (
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID,
     LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT,
+    HTF_ALIGNMENT_ENABLED,
     DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
     get_entry_expiration
 )
 
-# Trend analysis for leg filtering
-from trend_analysis import analyze_trend, timeframe_to_interval
+# Trend analysis for leg filtering and HTF alignment
+from trend_analysis import analyze_trend, timeframe_to_interval, check_htf_alignment
 
 def _opposite_side(side: str) -> str:
     return "Sell" if side == "Buy" else "Buy"
@@ -507,6 +508,33 @@ class TradeEngine:
 
             except Exception as e:
                 self.log.warning(f"⚠️ Trend analysis failed for {symbol}: {e} (proceeding anyway)")
+
+        # ============================================================
+        # HIGHER TIMEFRAME ALIGNMENT (80%+ Winrate Filter)
+        # ============================================================
+        # Check if H4/D1 trend aligns with signal direction
+        # Filters out counter-trend bounces (like BNB bear rally)
+        if HTF_ALIGNMENT_ENABLED:
+            try:
+                timeframe = sig.get("timeframe", "H1")
+                is_aligned, htf_reason = check_htf_alignment(
+                    bybit=self.bybit,
+                    category=CATEGORY,
+                    symbol=symbol,
+                    signal_side=sig["side"],
+                    signal_tf=timeframe,
+                    swing_lookback=SWING_LOOKBACK,
+                    log=self.log
+                )
+
+                if not is_aligned:
+                    self.log.info(f"⏭️  SKIP {symbol} – {htf_reason}")
+                    return None
+                else:
+                    self.log.info(f"   ✓ {htf_reason}")
+
+            except Exception as e:
+                self.log.warning(f"⚠️ HTF alignment check failed for {symbol}: {e} (proceeding anyway)")
 
         # Get instrument rules for price/qty rounding
         rules = self._get_instrument_rules(symbol)

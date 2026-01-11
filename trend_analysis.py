@@ -427,3 +427,112 @@ def timeframe_to_interval(timeframe: str) -> str:
         "W": "W",
     }
     return mapping.get(timeframe.upper(), "60")  # Default to 1h
+
+
+def get_htf_for_signal(signal_tf: str) -> str:
+    """
+    Get Higher TimeFrame for a signal timeframe.
+
+    M15 → H4
+    H1  → H4
+    H4  → D1
+    """
+    htf_mapping = {
+        "M5": "H1",
+        "M15": "H4",
+        "M30": "H4",
+        "H1": "H4",
+        "H2": "H4",
+        "H4": "D",
+        "H6": "D",
+        "H12": "D",
+    }
+    return htf_mapping.get(signal_tf.upper(), "H4")
+
+
+def get_simple_trend_direction(candles: List[Dict[str, Any]], swing_lookback: int = 5) -> TrendDirection:
+    """
+    Get simple trend direction from candles (no full analysis, just direction).
+    Used for HTF alignment check.
+    """
+    swings = detect_swing_points(candles, lookback=swing_lookback)
+    if len(swings) < 4:
+        return TrendDirection.NEUTRAL
+
+    direction, _ = classify_swing_sequence(swings)
+    return direction
+
+
+def check_htf_alignment(
+    bybit,
+    category: str,
+    symbol: str,
+    signal_side: str,  # "buy" or "sell"
+    signal_tf: str,    # "M15", "H1", etc.
+    swing_lookback: int = 5,
+    htf_candles: int = 100,
+    log: Optional[logging.Logger] = None
+) -> Tuple[bool, str]:
+    """
+    Check if Higher TimeFrame trend aligns with signal direction.
+
+    For 80% winrate, only take signals that align with HTF trend.
+    This filters out counter-trend bounces.
+
+    Args:
+        bybit: Bybit client instance
+        category: "linear" for futures
+        symbol: Trading symbol
+        signal_side: "buy" or "sell"
+        signal_tf: Signal timeframe ("M15", "H1", etc.)
+        swing_lookback: Lookback for swing detection
+        htf_candles: Number of HTF candles to fetch
+        log: Optional logger
+
+    Returns:
+        (is_aligned: bool, reason: str)
+    """
+    try:
+        # Get HTF interval
+        htf = get_htf_for_signal(signal_tf)
+        htf_interval = timeframe_to_interval(htf)
+
+        # Fetch HTF candles
+        htf_candles_data = bybit.klines(category, symbol, htf_interval, htf_candles)
+
+        if not htf_candles_data or len(htf_candles_data) < 50:
+            if log:
+                log.warning(f"⚠️ Not enough HTF ({htf}) candles for {symbol}, allowing entry")
+            return True, f"HTF data insufficient, allowing entry"
+
+        # Get HTF trend direction
+        htf_direction = get_simple_trend_direction(htf_candles_data, swing_lookback)
+
+        signal_side_lower = signal_side.lower()
+
+        if log:
+            log.info(f"📊 HTF Check: {htf} trend = {htf_direction.value} | Signal = {signal_side_lower.upper()}")
+
+        # Check alignment
+        if signal_side_lower == "buy":
+            if htf_direction == TrendDirection.UP:
+                return True, f"HTF ({htf}) uptrend aligns with LONG signal ✓"
+            elif htf_direction == TrendDirection.DOWN:
+                return False, f"HTF ({htf}) is DOWNTREND - LONG signal is counter-trend"
+            else:
+                # Neutral - allow with caution
+                return True, f"HTF ({htf}) neutral, allowing LONG with caution"
+
+        else:  # sell
+            if htf_direction == TrendDirection.DOWN:
+                return True, f"HTF ({htf}) downtrend aligns with SHORT signal ✓"
+            elif htf_direction == TrendDirection.UP:
+                return False, f"HTF ({htf}) is UPTREND - SHORT signal is counter-trend"
+            else:
+                # Neutral - allow with caution
+                return True, f"HTF ({htf}) neutral, allowing SHORT with caution"
+
+    except Exception as e:
+        if log:
+            log.warning(f"⚠️ HTF alignment check failed: {e}, allowing entry")
+        return True, f"HTF check failed ({e}), allowing entry"
