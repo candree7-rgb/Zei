@@ -312,7 +312,11 @@ def main():
 
     # ----- Pending entry monitor thread (checks if price past TP1) -----
     def pending_entry_monitor():
-        """Fast background check for pending entries - cancel if price already past TP1."""
+        """Fast background check for pending entries - cancel if price already past TP1.
+
+        Tracks peak price (highest for LONG, lowest for SHORT) to detect spikes
+        that crossed TP1 even if price came back.
+        """
         while True:
             try:
                 time.sleep(PENDING_MONITOR_INTERVAL_SEC)
@@ -336,18 +340,35 @@ def main():
                     try:
                         current_price = bybit.last_price(CATEGORY, symbol)
 
+                        # Track peak price to detect spikes
+                        # LONG (Buy): track highest price seen
+                        # SHORT (Sell): track lowest price seen
+                        if side == "Buy":
+                            peak = tr.get("peak_price_seen", 0)
+                            if current_price > peak:
+                                tr["peak_price_seen"] = current_price
+                                peak = current_price
+                        else:  # Sell
+                            peak = tr.get("peak_price_seen", float('inf'))
+                            if current_price < peak:
+                                tr["peak_price_seen"] = current_price
+                                peak = current_price
+
+                        # Check if peak ever crossed TP1 (even if price came back)
                         should_cancel = False
-                        if side == "Buy" and current_price >= tp1:
+                        if side == "Buy" and peak >= tp1:
                             should_cancel = True
-                        elif side == "Sell" and current_price <= tp1:
+                            log.info(f"📈 {symbol} peak {peak:.5f} crossed TP1 {tp1:.5f} (current: {current_price:.5f})")
+                        elif side == "Sell" and peak <= tp1:
                             should_cancel = True
+                            log.info(f"📉 {symbol} peak {peak:.5f} crossed TP1 {tp1:.5f} (current: {current_price:.5f})")
 
                         if should_cancel:
                             oid = tr.get("entry_order_id")
                             if oid and oid != "DRY_RUN":
                                 try:
                                     engine.cancel_entry(symbol, oid)
-                                    log.info(f"🚫 [Monitor] Canceled {symbol} - price past TP1 ({current_price:.5f})")
+                                    log.info(f"🚫 [Monitor] Canceled {symbol} - price already hit TP1 (move over)")
                                 except Exception as e:
                                     log.debug(f"Cancel failed: {e}")
                             tr["status"] = "cancelled_past_tp"
