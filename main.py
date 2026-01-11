@@ -181,7 +181,8 @@ def main():
                     continue  # Skip other updates for this trade
 
                 # Parse only SL/DCA from updated signal (doesn't require "NEW SIGNAL")
-                sig = parse_signal_update(txt)
+                # Pass symbol to extract only the block for this specific symbol (multi-signal messages)
+                sig = parse_signal_update(txt, symbol=tr.get("symbol"))
 
                 # Log what we found
                 new_sl = sig.get("sl_price")

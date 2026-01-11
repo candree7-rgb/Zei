@@ -183,12 +183,17 @@ def parse_all_signals(text: str, quote: str = "USDT") -> List[Dict[str, Any]]:
     return results
 
 
-def parse_signal_update(text: str) -> Dict[str, Any]:
+def parse_signal_update(text: str, symbol: Optional[str] = None) -> Dict[str, Any]:
     """
     Parse signal for SL/TP updates only.
 
     Unlike parse_signal(), this does NOT require specific header.
     Used for checking if an existing signal was updated with new SL/TP values.
+
+    Args:
+        text: Full message text
+        symbol: Optional symbol to filter for (e.g., "XTZUSDT"). If provided,
+                only extracts TPs/SL from the block for that symbol.
 
     Returns dict with sl_price and tp_prices (may be None/empty if not found).
     """
@@ -198,14 +203,37 @@ def parse_signal_update(text: str) -> Dict[str, Any]:
         "tp_prices": [],
     }
 
-    # Parse Stop Loss
-    msl = RE_SL.search(text)
+    # If symbol provided, try to find the specific block for this symbol
+    block = text
+    if symbol:
+        # Extract base from symbol (e.g., "XTZUSDT" -> "XTZ")
+        base = symbol.replace("USDT", "").replace("USD", "")
+
+        # Find all signal blocks and get the one for this symbol
+        signal_matches = list(RE_SIDE_SYMBOL.finditer(text))
+        for i, match in enumerate(signal_matches):
+            match_base = match.group(2).upper()
+            # Apply reverse symbol mapping
+            for orig, mapped in SYMBOL_MAP.items():
+                if mapped == match_base:
+                    match_base = orig
+                    break
+
+            if match_base == base or SYMBOL_MAP.get(match_base, match_base) == base:
+                # Found the block for this symbol
+                start = match.start()
+                end = signal_matches[i + 1].start() if i + 1 < len(signal_matches) else len(text)
+                block = text[start:end]
+                break
+
+    # Parse Stop Loss (from block)
+    msl = RE_SL.search(block)
     if msl:
         result["sl_price"] = float(msl.group(1))
 
-    # Parse TP prices
+    # Parse TP prices (from block)
     tps: List[float] = []
-    for m in RE_TP.finditer(text):
+    for m in RE_TP.finditer(block):
         idx = int(m.group(1))
         price = float(m.group(2))
         while len(tps) < idx:
