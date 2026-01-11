@@ -77,6 +77,9 @@ ENTRY_EXPIRATION_H1  = _get_int("ENTRY_EXPIRATION_H1", "120")   # ~2 candles
 ENTRY_EXPIRATION_H4  = _get_int("ENTRY_EXPIRATION_H4", "480")   # ~2 candles
 ENTRY_EXPIRATION_MIN = _get_int("ENTRY_EXPIRATION_MIN", "180")  # Fallback default
 
+# Pending entry monitor - checks if price already past TP1
+PENDING_MONITOR_INTERVAL_SEC = _get_int("PENDING_MONITOR_INTERVAL_SEC", "60")  # Check every 60s
+
 def get_entry_expiration(timeframe: str) -> int:
     """Get entry expiration in minutes based on signal timeframe."""
     tf = timeframe.upper() if timeframe else ""
