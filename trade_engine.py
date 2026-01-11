@@ -16,12 +16,13 @@ from config import (
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID,
     LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT,
+    HTF_ALIGNMENT_ENABLED,
     DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
     get_entry_expiration
 )
 
-# Trend analysis for leg filtering
-from trend_analysis import analyze_trend, timeframe_to_interval
+# Trend analysis for leg filtering and HTF alignment
+from trend_analysis import analyze_trend, timeframe_to_interval, check_htf_alignment
 
 def _opposite_side(side: str) -> str:
     return "Sell" if side == "Buy" else "Buy"
@@ -507,6 +508,33 @@ class TradeEngine:
 
             except Exception as e:
                 self.log.warning(f"⚠️ Trend analysis failed for {symbol}: {e} (proceeding anyway)")
+
+        # ============================================================
+        # HIGHER TIMEFRAME ALIGNMENT (80%+ Winrate Filter)
+        # ============================================================
+        # Check if H4/D1 trend aligns with signal direction
+        # Filters out counter-trend bounces (like BNB bear rally)
+        if HTF_ALIGNMENT_ENABLED:
+            try:
+                timeframe = sig.get("timeframe", "H1")
+                is_aligned, htf_reason = check_htf_alignment(
+                    bybit=self.bybit,
+                    category=CATEGORY,
+                    symbol=symbol,
+                    signal_side=sig["side"],
+                    signal_tf=timeframe,
+                    swing_lookback=SWING_LOOKBACK,
+                    log=self.log
+                )
+
+                if not is_aligned:
+                    self.log.info(f"⏭️  SKIP {symbol} – {htf_reason}")
+                    return None
+                else:
+                    self.log.info(f"   ✓ {htf_reason}")
+
+            except Exception as e:
+                self.log.warning(f"⚠️ HTF alignment check failed for {symbol}: {e} (proceeding anyway)")
 
         # Get instrument rules for price/qty rounding
         rules = self._get_instrument_rules(symbol)
@@ -1349,6 +1377,8 @@ class TradeEngine:
 
         If price shot through TP1 before entry filled, the move is over.
         Entering now would be chasing - cancel the order.
+
+        Uses peak_price_seen to detect spikes that crossed TP1 even if price came back.
         """
         if DRY_RUN:
             return
@@ -1369,23 +1399,33 @@ class TradeEngine:
             try:
                 current_price = self.bybit.last_price(CATEGORY, symbol)
 
-                # Check if price already went through TP1
+                # Track peak price to detect spikes
+                if side == "Buy":
+                    peak = tr.get("peak_price_seen", 0)
+                    if current_price > peak:
+                        tr["peak_price_seen"] = current_price
+                        peak = current_price
+                else:  # Sell
+                    peak = tr.get("peak_price_seen", float('inf'))
+                    if current_price < peak:
+                        tr["peak_price_seen"] = current_price
+                        peak = current_price
+
+                # Check if peak ever crossed TP1 (even if price came back)
                 should_cancel = False
-                if side == "Buy":  # LONG: TP1 is above entry
-                    if current_price >= tp1:
-                        should_cancel = True
-                        self.log.info(f"📈 Price already at/past TP1 for {symbol} ({current_price:.5f} >= {tp1:.5f})")
-                else:  # SHORT (Sell): TP1 is below entry
-                    if current_price <= tp1:
-                        should_cancel = True
-                        self.log.info(f"📉 Price already at/past TP1 for {symbol} ({current_price:.5f} <= {tp1:.5f})")
+                if side == "Buy" and peak >= tp1:
+                    should_cancel = True
+                    self.log.info(f"📈 {symbol} peak {peak:.5f} crossed TP1 {tp1:.5f}")
+                elif side == "Sell" and peak <= tp1:
+                    should_cancel = True
+                    self.log.info(f"📉 {symbol} peak {peak:.5f} crossed TP1 {tp1:.5f}")
 
                 if should_cancel:
                     oid = tr.get("entry_order_id")
                     if oid and oid != "DRY_RUN":
                         try:
                             self.cancel_entry(symbol, oid)
-                            self.log.info(f"🚫 Canceled entry {symbol} - price already past TP1 (move over)")
+                            self.log.info(f"🚫 Canceled entry {symbol} - price already hit TP1 (move over)")
                         except Exception as e:
                             self.log.warning(f"Cancel failed {symbol}: {e}")
                     tr["status"] = "cancelled_past_tp"

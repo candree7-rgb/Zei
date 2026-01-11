@@ -77,6 +77,9 @@ ENTRY_EXPIRATION_H1  = _get_int("ENTRY_EXPIRATION_H1", "120")   # ~2 candles
 ENTRY_EXPIRATION_H4  = _get_int("ENTRY_EXPIRATION_H4", "480")   # ~2 candles
 ENTRY_EXPIRATION_MIN = _get_int("ENTRY_EXPIRATION_MIN", "180")  # Fallback default
 
+# Pending entry monitor - checks if price already past TP1
+PENDING_MONITOR_INTERVAL_SEC = _get_int("PENDING_MONITOR_INTERVAL_SEC", "60")  # Check every 60s
+
 def get_entry_expiration(timeframe: str) -> int:
     """Get entry expiration in minutes based on signal timeframe."""
     tf = timeframe.upper() if timeframe else ""
@@ -146,6 +149,14 @@ TREND_CANDLES = _get_int("TREND_CANDLES", "200")
 # Skip signals where trend direction doesn't match signal side
 # BUY should be in uptrend, SELL should be in downtrend
 REQUIRE_TREND_ALIGNMENT = _get_bool("REQUIRE_TREND_ALIGNMENT", "true")
+
+# ============================================================
+# HIGHER TIMEFRAME ALIGNMENT (for 80%+ winrate)
+# ============================================================
+# Check if Higher TimeFrame trend aligns with signal direction
+# M15/H1 signals check H4 trend, H4 signals check D1 trend
+# Filters out counter-trend bounces (like bear rallies)
+HTF_ALIGNMENT_ENABLED = _get_bool("HTF_ALIGNMENT_ENABLED", "true")
 
 # ============================================================
 # SIGNAL BATCHING (Multiple signals at same time)

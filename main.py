@@ -13,6 +13,7 @@ from config import (
     MAX_CONCURRENT_TRADES, MAX_TRADES_PER_DAY, TC_MAX_LAG_SEC,
     POLL_SECONDS, POLL_JITTER_MAX, SIGNAL_UPDATE_INTERVAL_SEC,
     POLL_QUARTER_HOUR, POLL_QUARTER_BUFFER_SEC,
+    PENDING_MONITOR_INTERVAL_SEC,
     STATE_FILE, DRY_RUN, LOG_LEVEL,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT,
     SIGNAL_PARSER_VERSION,
@@ -308,6 +309,81 @@ def main():
 
     t = threading.Thread(target=ws_loop, daemon=True)
     t.start()
+
+    # ----- Pending entry monitor thread (checks if price past TP1) -----
+    def pending_entry_monitor():
+        """Fast background check for pending entries - cancel if price already past TP1.
+
+        Tracks peak price (highest for LONG, lowest for SHORT) to detect spikes
+        that crossed TP1 even if price came back.
+        """
+        while True:
+            try:
+                time.sleep(PENDING_MONITOR_INTERVAL_SEC)
+
+                pending = [tr for tr in st.get("open_trades", {}).values()
+                          if tr.get("status") == "pending"]
+
+                if not pending:
+                    continue
+
+                for tr in pending:
+                    symbol = tr["symbol"]
+                    side = tr["order_side"]
+                    tp_prices = tr.get("tp_prices") or []
+
+                    if not tp_prices:
+                        continue
+
+                    tp1 = float(tp_prices[0])
+
+                    try:
+                        current_price = bybit.last_price(CATEGORY, symbol)
+
+                        # Track peak price to detect spikes
+                        # LONG (Buy): track highest price seen
+                        # SHORT (Sell): track lowest price seen
+                        if side == "Buy":
+                            peak = tr.get("peak_price_seen", 0)
+                            if current_price > peak:
+                                tr["peak_price_seen"] = current_price
+                                peak = current_price
+                        else:  # Sell
+                            peak = tr.get("peak_price_seen", float('inf'))
+                            if current_price < peak:
+                                tr["peak_price_seen"] = current_price
+                                peak = current_price
+
+                        # Check if peak ever crossed TP1 (even if price came back)
+                        should_cancel = False
+                        if side == "Buy" and peak >= tp1:
+                            should_cancel = True
+                            log.info(f"📈 {symbol} peak {peak:.5f} crossed TP1 {tp1:.5f} (current: {current_price:.5f})")
+                        elif side == "Sell" and peak <= tp1:
+                            should_cancel = True
+                            log.info(f"📉 {symbol} peak {peak:.5f} crossed TP1 {tp1:.5f} (current: {current_price:.5f})")
+
+                        if should_cancel:
+                            oid = tr.get("entry_order_id")
+                            if oid and oid != "DRY_RUN":
+                                try:
+                                    engine.cancel_entry(symbol, oid)
+                                    log.info(f"🚫 [Monitor] Canceled {symbol} - price already hit TP1 (move over)")
+                                except Exception as e:
+                                    log.debug(f"Cancel failed: {e}")
+                            tr["status"] = "cancelled_past_tp"
+                            save_state(STATE_FILE, st)
+
+                    except Exception as e:
+                        log.debug(f"Price check failed for {symbol}: {e}")
+
+            except Exception as e:
+                log.debug(f"Pending monitor error: {e}")
+                time.sleep(5)
+
+    monitor_thread = threading.Thread(target=pending_entry_monitor, daemon=True)
+    monitor_thread.start()
+    log.info(f"🔍 Pending entry monitor started ({PENDING_MONITOR_INTERVAL_SEC}s interval)")
 
     # ----- helper: limits -----
     def trades_today() -> int:
