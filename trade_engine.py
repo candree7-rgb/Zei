@@ -1344,6 +1344,55 @@ class TradeEngine:
                         self.log.warning(f"Cancel failed {tr['symbol']} ({tid}): {e}")
                 tr["status"] = "expired"
 
+    def cancel_entries_past_tp(self) -> None:
+        """Cancel pending entries if price already reached TP levels.
+
+        If price shot through TP1 before entry filled, the move is over.
+        Entering now would be chasing - cancel the order.
+        """
+        if DRY_RUN:
+            return
+
+        for tid, tr in list(self.state.get("open_trades", {}).items()):
+            if tr.get("status") != "pending":
+                continue
+
+            symbol = tr["symbol"]
+            side = tr["order_side"]  # "Buy" or "Sell"
+            tp_prices = tr.get("tp_prices") or []
+
+            if not tp_prices:
+                continue
+
+            tp1 = float(tp_prices[0])
+
+            try:
+                current_price = self.bybit.last_price(CATEGORY, symbol)
+
+                # Check if price already went through TP1
+                should_cancel = False
+                if side == "Buy":  # LONG: TP1 is above entry
+                    if current_price >= tp1:
+                        should_cancel = True
+                        self.log.info(f"📈 Price already at/past TP1 for {symbol} ({current_price:.5f} >= {tp1:.5f})")
+                else:  # SHORT (Sell): TP1 is below entry
+                    if current_price <= tp1:
+                        should_cancel = True
+                        self.log.info(f"📉 Price already at/past TP1 for {symbol} ({current_price:.5f} <= {tp1:.5f})")
+
+                if should_cancel:
+                    oid = tr.get("entry_order_id")
+                    if oid and oid != "DRY_RUN":
+                        try:
+                            self.cancel_entry(symbol, oid)
+                            self.log.info(f"🚫 Canceled entry {symbol} - price already past TP1 (move over)")
+                        except Exception as e:
+                            self.log.warning(f"Cancel failed {symbol}: {e}")
+                    tr["status"] = "cancelled_past_tp"
+
+            except Exception as e:
+                self.log.debug(f"TP check failed for {symbol}: {e}")
+
     def check_position_alerts(self) -> None:
         """Check all open positions and send Telegram alerts if thresholds crossed."""
         if not telegram_alerts.is_enabled():
