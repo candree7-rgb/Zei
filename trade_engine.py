@@ -16,7 +16,8 @@ from config import (
     TRAIL_AFTER_TP_INDEX, TRAIL_DISTANCE_PCT, TRAIL_ACTIVATE_ON_TP,
     DRY_RUN, BOT_ID,
     LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT,
-    DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE
+    DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
+    get_entry_expiration
 )
 
 # Trend analysis for leg filtering
@@ -151,6 +152,74 @@ class TradeEngine:
         if qty < min_qty:
             qty = min_qty
         return float(f"{qty:.10f}")
+
+    def _get_symbol_max_leverage(self, symbol: str) -> int:
+        """Get the maximum allowed leverage for a symbol from Bybit."""
+        try:
+            info = self.bybit.instruments_info(CATEGORY, symbol)
+            leverage_filter = info.get("leverageFilter") or {}
+            max_lev = leverage_filter.get("maxLeverage")
+            if max_lev:
+                return int(float(max_lev))
+        except Exception as e:
+            self.log.warning(f"Could not get max leverage for {symbol}: {e}")
+        return MAX_LEVERAGE  # Fall back to config max
+
+    def _set_leverage_with_fallback(self, symbol: str, leverage: int) -> int:
+        """
+        Set leverage with fallback if symbol max is lower than requested.
+
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            leverage: Requested leverage
+
+        Returns:
+            Actual leverage that was set
+        """
+        # First, get the symbol's max leverage
+        symbol_max = self._get_symbol_max_leverage(symbol)
+
+        # Cap leverage to symbol max
+        actual_leverage = min(leverage, symbol_max)
+
+        if actual_leverage != leverage:
+            self.log.info(f"📊 Leverage capped: {leverage}x → {actual_leverage}x (symbol max: {symbol_max}x)")
+
+        # Try to set leverage
+        try:
+            self.bybit.set_leverage(CATEGORY, symbol, actual_leverage)
+            self.log.debug(f"Leverage set to {actual_leverage}x for {symbol}")
+            return actual_leverage
+        except Exception as e:
+            error_str = str(e).lower()
+
+            # Handle "leverage not modified" error (already at this leverage)
+            if "not modified" in error_str or "110043" in str(e):
+                self.log.debug(f"Leverage already at {actual_leverage}x for {symbol}")
+                return actual_leverage
+
+            # Handle other leverage errors - try lower values
+            if "leverage" in error_str or "invalid" in error_str:
+                self.log.warning(f"Leverage {actual_leverage}x failed for {symbol}: {e}")
+
+                # Try with progressively lower leverage
+                for fallback_lev in [25, 20, 15, 10, 5]:
+                    if fallback_lev >= actual_leverage:
+                        continue
+                    try:
+                        self.bybit.set_leverage(CATEGORY, symbol, fallback_lev)
+                        self.log.info(f"📊 Leverage fallback: {actual_leverage}x → {fallback_lev}x for {symbol}")
+                        return fallback_lev
+                    except Exception as e2:
+                        if "not modified" in str(e2).lower():
+                            return fallback_lev
+                        continue
+
+                self.log.error(f"❌ Could not set any leverage for {symbol}")
+                return MIN_LEVERAGE
+
+            # Re-raise other errors
+            raise
 
     def calc_base_qty(self, symbol: str, entry_price: float) -> float:
         """Legacy: Calculate qty with fixed leverage. Use calc_dynamic_position for SL-based sizing."""
@@ -466,21 +535,14 @@ class TradeEngine:
             qty = position_info["qty"]
             dynamic_leverage = position_info["leverage"]
 
-            # Set the calculated leverage
-            try:
-                if not DRY_RUN:
-                    self.bybit.set_leverage(CATEGORY, symbol, dynamic_leverage)
-                    self.log.info(f"📊 Leverage set to {dynamic_leverage}x for {symbol}")
-            except Exception as e:
-                self.log.warning(f"set_leverage failed for {symbol}: {e}")
+            # Set the calculated leverage with fallback
+            if not DRY_RUN:
+                self._set_leverage_with_fallback(symbol, dynamic_leverage)
         else:
             # Legacy fixed sizing
             qty = self.calc_base_qty(symbol, trigger)
-            try:
-                if not DRY_RUN:
-                    self.bybit.set_leverage(CATEGORY, symbol, LEVERAGE)
-            except Exception as e:
-                self.log.warning(f"set_leverage failed for {symbol}: {e}")
+            if not DRY_RUN:
+                self._set_leverage_with_fallback(symbol, LEVERAGE)
 
         # Check if price is very close to trigger (within 0.5%)
         # If so, place a direct limit order instead of conditional
@@ -1210,12 +1272,15 @@ class TradeEngine:
             if tr.get("status") != "pending":
                 continue
             placed = float(tr.get("placed_ts") or 0)
-            if placed and now - placed > ENTRY_EXPIRATION_MIN * 60:
+            # Get timeframe-specific expiration (M15=30min, H1=120min, H4=480min)
+            timeframe = tr.get("timeframe", "")
+            expiration_min = get_entry_expiration(timeframe)
+            if placed and now - placed > expiration_min * 60:
                 oid = tr.get("entry_order_id")
                 if oid and oid != "DRY_RUN":
                     try:
                         self.cancel_entry(tr["symbol"], oid)
-                        self.log.info(f"⏳ Canceled expired entry {tr['symbol']} ({tid})")
+                        self.log.info(f"⏳ Canceled expired entry {tr['symbol']} ({tid}) - {timeframe} expired after {expiration_min}min")
                     except Exception as e:
                         self.log.warning(f"Cancel failed {tr['symbol']} ({tid}): {e}")
                 tr["status"] = "expired"

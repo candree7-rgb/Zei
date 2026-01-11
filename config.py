@@ -70,7 +70,24 @@ MAX_TRADES_PER_DAY    = _get_int("MAX_TRADES_PER_DAY","20")
 TC_MAX_LAG_SEC        = _get_int("TC_MAX_LAG_SEC","300")
 
 # Entry rules
-ENTRY_EXPIRATION_MIN         = _get_int("ENTRY_EXPIRATION_MIN","180")
+# Timeframe-based entry expiration (in minutes)
+# If specific timeframe not set, falls back to ENTRY_EXPIRATION_MIN
+ENTRY_EXPIRATION_M15 = _get_int("ENTRY_EXPIRATION_M15", "30")   # ~2 candles
+ENTRY_EXPIRATION_H1  = _get_int("ENTRY_EXPIRATION_H1", "120")   # ~2 candles
+ENTRY_EXPIRATION_H4  = _get_int("ENTRY_EXPIRATION_H4", "480")   # ~2 candles
+ENTRY_EXPIRATION_MIN = _get_int("ENTRY_EXPIRATION_MIN", "180")  # Fallback default
+
+def get_entry_expiration(timeframe: str) -> int:
+    """Get entry expiration in minutes based on signal timeframe."""
+    tf = timeframe.upper() if timeframe else ""
+    if tf == "M15":
+        return ENTRY_EXPIRATION_M15
+    elif tf == "H1":
+        return ENTRY_EXPIRATION_H1
+    elif tf == "H4":
+        return ENTRY_EXPIRATION_H4
+    return ENTRY_EXPIRATION_MIN
+
 ENTRY_TOO_FAR_PCT            = _get_float("ENTRY_TOO_FAR_PCT","0.5")
 ENTRY_TOO_FAR_NO_TP_PCT      = _get_float("ENTRY_TOO_FAR_NO_TP_PCT","15.0")  # Fallback when TP1 unknown (more lenient)
 ENTRY_TRIGGER_BUFFER_PCT     = _get_float("ENTRY_TRIGGER_BUFFER_PCT","0.0")
