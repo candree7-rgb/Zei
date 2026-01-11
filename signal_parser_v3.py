@@ -47,8 +47,9 @@ RE_HEADER = re.compile(
 
 # Side and Symbol: "BUY 📈 on ATOM/USD at Price: 2.576"
 # or: "SELL 📉 on AVAX/USD at Price: 13.92"
+# Note: Use (?:📈|📉)? instead of [📈📉]? because emojis are multi-byte
 RE_SIDE_SYMBOL = re.compile(
-    r"(BUY|SELL)\s*[📈📉]?\s*on\s+([A-Z0-9]+)/([A-Z]+)\s+at\s+Price\s*:\s*" + NUM,
+    r"(BUY|SELL)\s*(?:📈|📉)?\s*on\s+([A-Z0-9]+)/([A-Z]+)\s+at\s+Price\s*:\s*" + NUM,
     re.I
 )
 
@@ -71,30 +72,10 @@ RE_TIMEFRAME = re.compile(
 )
 
 
-def parse_signal(text: str, quote: str = "USDT") -> Optional[Dict[str, Any]]:
-    """
-    Parse Crypto Signals V3 format (emoji-based plain text).
-
-    Returns None if:
-    - Not a Trading Signals message
-    - Timeframe not in ALLOWED_TIMEFRAMES (H1, M15)
-    - Cannot parse symbol/side or entry price
-    """
-    # Check for header
-    if not RE_HEADER.search(text):
-        return None
-
-    # Check timeframe - only allow H1 and M15
-    mtf = RE_TIMEFRAME.search(text)
-    if not mtf:
-        return None
-
-    timeframe = mtf.group(1).upper()
-    if timeframe not in ALLOWED_TIMEFRAMES:
-        return None
-
+def parse_single_signal_block(block: str, timeframe: str, quote: str = "USDT") -> Optional[Dict[str, Any]]:
+    """Parse a single signal block (one BUY/SELL with its TPs and SL)."""
     # Parse side and symbol: "BUY 📈 on ATOM/USD at Price: 2.576"
-    ms = RE_SIDE_SYMBOL.search(text)
+    ms = RE_SIDE_SYMBOL.search(block)
     if not ms:
         return None
 
@@ -115,35 +96,91 @@ def parse_signal(text: str, quote: str = "USDT") -> Optional[Dict[str, Any]]:
     # Convert to Bybit symbol (always USDT perpetual)
     symbol = f"{base}{quote}"
 
-    # Parse TP prices
+    # Parse TP prices (only in this block)
     tps: List[float] = []
-    for m in RE_TP.finditer(text):
+    for m in RE_TP.finditer(block):
         idx = int(m.group(1))
         price = float(m.group(2))
-        # Keep in order
         while len(tps) < idx:
             tps.append(0.0)
         tps[idx-1] = price
     tps = [p for p in tps if p > 0]
 
-    # Parse Stop Loss
+    # Parse Stop Loss (only in this block)
     sl = None
-    msl = RE_SL.search(text)
+    msl = RE_SL.search(block)
     if msl:
         sl = float(msl.group(1))
 
     return {
         "base": base,
         "symbol": symbol,
-        "side": side,           # buy / sell
+        "side": side,
         "trigger": trigger,
         "tp_prices": tps,
-        "dca_prices": [],       # No DCA in this signal format
+        "dca_prices": [],
         "sl_price": sl,
-        "leverage": None,       # No leverage in this signal format (use config LEVERAGE)
+        "leverage": None,
         "timeframe": timeframe,
-        "raw": text,
+        "raw": block,
     }
+
+
+def parse_signal(text: str, quote: str = "USDT") -> Optional[Dict[str, Any]]:
+    """
+    Parse Crypto Signals V3 format (emoji-based plain text).
+
+    If multiple signals in one message, returns the FIRST valid one.
+    Use parse_all_signals() to get all signals.
+
+    Returns None if:
+    - Not a Trading Signals message
+    - Timeframe not in ALLOWED_TIMEFRAMES (H1, M15, H4)
+    - Cannot parse symbol/side or entry price
+    """
+    signals = parse_all_signals(text, quote)
+    return signals[0] if signals else None
+
+
+def parse_all_signals(text: str, quote: str = "USDT") -> List[Dict[str, Any]]:
+    """
+    Parse ALL signals from a message (handles multi-signal messages).
+
+    Returns list of parsed signals (may be empty).
+    """
+    # Check for header
+    if not RE_HEADER.search(text):
+        return []
+
+    # Check timeframe - only allow configured timeframes
+    mtf = RE_TIMEFRAME.search(text)
+    if not mtf:
+        return []
+
+    timeframe = mtf.group(1).upper()
+    if timeframe not in ALLOWED_TIMEFRAMES:
+        return []
+
+    # Find all BUY/SELL occurrences to split multi-signal messages
+    signal_matches = list(RE_SIDE_SYMBOL.finditer(text))
+
+    if not signal_matches:
+        return []
+
+    results = []
+
+    for i, match in enumerate(signal_matches):
+        # Extract block for this signal (from this match to next match or end)
+        start = match.start()
+        end = signal_matches[i + 1].start() if i + 1 < len(signal_matches) else len(text)
+        block = text[start:end]
+
+        sig = parse_single_signal_block(block, timeframe, quote)
+        if sig:
+            sig["raw"] = text  # Keep full message as raw
+            results.append(sig)
+
+    return results
 
 
 def parse_signal_update(text: str) -> Dict[str, Any]:
