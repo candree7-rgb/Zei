@@ -4,16 +4,21 @@ import random
 import threading
 import logging
 
+from datetime import datetime, timedelta
+
 from config import (
     DISCORD_TOKEN, CHANNEL_ID,
     BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_TESTNET, BYBIT_DEMO, RECV_WINDOW,
     CATEGORY, QUOTE, LEVERAGE, RISK_PCT,
     MAX_CONCURRENT_TRADES, MAX_TRADES_PER_DAY, TC_MAX_LAG_SEC,
     POLL_SECONDS, POLL_JITTER_MAX, SIGNAL_UPDATE_INTERVAL_SEC,
+    POLL_QUARTER_HOUR, POLL_QUARTER_BUFFER_SEC,
     STATE_FILE, DRY_RUN, LOG_LEVEL,
     TP_SPLITS, TP_SPLITS_AUTO, DCA_QTY_MULTS, INITIAL_SL_PCT,
     SIGNAL_PARSER_VERSION,
-    FOLLOW_TP_ENABLED, MAX_SL_DISTANCE_PCT, CAP_SL_DISTANCE_PCT
+    FOLLOW_TP_ENABLED, MAX_SL_DISTANCE_PCT, CAP_SL_DISTANCE_PCT,
+    SIGNAL_BATCH_ENABLED, MAX_SIGNALS_PER_BATCH,
+    MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES
 )
 from bybit_v5 import BybitV5
 from discord_reader import DiscordReader
@@ -29,6 +34,7 @@ else:
 from state import load_state, save_state, utc_day_key
 from trade_engine import TradeEngine
 import db_export
+from signal_scorer import score_signals_batch, select_best_signals
 
 def setup_logger() -> logging.Logger:
     log = logging.getLogger("bot")
@@ -38,6 +44,27 @@ def setup_logger() -> logging.Logger:
     h.setFormatter(fmt)
     log.handlers[:] = [h]
     return log
+
+
+def seconds_until_next_quarter_hour(buffer_sec: int = 3) -> tuple[float, datetime]:
+    """
+    Calculate seconds until next quarter hour (XX:00, XX:15, XX:30, XX:45) + buffer.
+    Returns (seconds_to_wait, next_poll_time).
+    """
+    now = datetime.now()
+    minute = now.minute
+
+    # Find next quarter hour
+    next_quarter = ((minute // 15) + 1) * 15
+
+    if next_quarter >= 60:
+        # Next hour
+        next_time = now.replace(minute=0, second=buffer_sec, microsecond=0) + timedelta(hours=1)
+    else:
+        next_time = now.replace(minute=next_quarter, second=buffer_sec, microsecond=0)
+
+    wait_seconds = (next_time - now).total_seconds()
+    return max(0, wait_seconds), next_time
 
 def main():
     log = setup_logger()
@@ -67,7 +94,8 @@ def main():
     log.info(f"Config: SIGNAL_PARSER={SIGNAL_PARSER_VERSION.upper()}")
     log.info(f"Config: CATEGORY={CATEGORY}, QUOTE={QUOTE}, LEVERAGE={LEVERAGE}x")
     log.info(f"Config: RISK_PCT={RISK_PCT}%, MAX_CONCURRENT={MAX_CONCURRENT_TRADES}, MAX_DAILY={MAX_TRADES_PER_DAY}")
-    log.info(f"Config: POLL_SECONDS={POLL_SECONDS}, TC_MAX_LAG_SEC={TC_MAX_LAG_SEC}")
+    poll_mode = f"QUARTER_HOUR (+{POLL_QUARTER_BUFFER_SEC}s)" if POLL_QUARTER_HOUR else f"{POLL_SECONDS}s"
+    log.info(f"Config: POLL_MODE={poll_mode}, TC_MAX_LAG_SEC={TC_MAX_LAG_SEC}")
     log.info(f"Config: DRY_RUN={DRY_RUN}, LOG_LEVEL={LOG_LEVEL}")
     log.info(f"Config: TP_SPLITS={TP_SPLITS}, TP_SPLITS_AUTO={TP_SPLITS_AUTO}")
     log.info(f"Config: DCA_QTY_MULTS={DCA_QTY_MULTS}, INITIAL_SL_PCT={INITIAL_SL_PCT}%")
@@ -340,6 +368,13 @@ def main():
                 msgs_sorted = sorted(msgs, key=lambda m: int(m.get("id","0")))
                 max_seen = int(after or 0)
 
+                # ============================================================
+                # SIGNAL BATCH PROCESSING
+                # ============================================================
+                # Collect all valid signals, then score and pick the best one(s)
+                batch_signals = []  # List of (signal, msg_id) tuples
+                seen = set(st.get("seen_signal_hashes", []))
+
                 for m in msgs_sorted:
                     mid = int(m.get("id","0"))
                     max_seen = max(max_seen, mid)
@@ -368,58 +403,96 @@ def main():
                             log.debug(f"Message {mid}: not a signal")
                         continue
 
-                    log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']} ({sig.get('leverage', '?')}x)")
-                    log.info(f"   TPs: {sig.get('tp_prices', [])} | DCAs: {sig.get('dca_prices', [])} | SL: {sig.get('sl_price')}")
+                    log.info(f"📨 Signal parsed: {sig['symbol']} {sig['side'].upper()} @ {sig['trigger']} ({sig.get('timeframe', '?')})")
+                    log.info(f"   TPs: {sig.get('tp_prices', [])} | SL: {sig.get('sl_price')}")
 
                     sh = signal_hash(sig)
-                    seen = set(st.get("seen_signal_hashes", []))
                     if sh in seen:
                         log.debug(f"Signal {sig['symbol']} already seen, skipping")
                         continue
 
-                    # mark seen early
+                    # Mark seen
                     seen.add(sh)
-                    st["seen_signal_hashes"] = list(seen)[-500:]
 
-                    trade_id = f"{sig['symbol']}|{sig['side']}|{int(time.time())}"
-                    log.info(f"🔄 Placing entry order for {sig['symbol']}...")
-                    oid = engine.place_conditional_entry(sig, trade_id)
-                    if not oid:
-                        log.warning(f"❌ Entry order failed for {sig['symbol']}")
-                        continue
+                    # Add to batch for scoring
+                    batch_signals.append((sig, mid))
 
-                    # Get risk info for tracking
-                    risk_info = engine.get_risk_info()
+                # Update seen hashes
+                st["seen_signal_hashes"] = list(seen)[-500:]
 
-                    # store trade
-                    st.setdefault("open_trades", {})[trade_id] = {
-                        "id": trade_id,
-                        "symbol": sig["symbol"],
-                        "order_side": "Sell" if sig["side"] == "sell" else "Buy",
-                        "pos_side": "Short" if sig["side"] == "sell" else "Long",
-                        "trigger": float(sig["trigger"]),
-                        "tp_prices": sig.get("tp_prices") or [],
-                        "tp_splits": None,  # engine uses config
-                        "dca_prices": sig.get("dca_prices") or [],
-                        "sl_price": sig.get("sl_price"),
-                        "entry_order_id": oid,
-                        "status": "pending",
-                        "placed_ts": time.time(),
-                        "base_qty": engine.calc_base_qty(sig["symbol"], float(sig["trigger"])),
-                        "raw": sig.get("raw", ""),
-                        "discord_msg_id": mid,  # Track message ID for updates
-                        "risk_pct": risk_info["risk_pct"],
-                        "risk_amount": risk_info["risk_amount"],
-                        "equity_at_entry": risk_info["equity_at_entry"],
-                        "leverage": risk_info["leverage"],
-                    }
-                    inc_trades_today()
-                    log.info(f"🟡 ENTRY PLACED {sig['symbol']} {sig['side'].upper()} trigger={sig['trigger']} (id={trade_id})")
+                # Process batch if we have signals
+                if batch_signals:
+                    log.info(f"📦 Batch: {len(batch_signals)} signal(s) to process")
 
-                    # stop if we hit limits mid-batch
-                    active = [tr for tr in st.get("open_trades", {}).values() if tr.get("status") in ("pending","open")]
-                    if len(active) >= MAX_CONCURRENT_TRADES or trades_today() >= MAX_TRADES_PER_DAY:
-                        break
+                    if SIGNAL_BATCH_ENABLED and len(batch_signals) > 1:
+                        # Score all signals and pick the best
+                        log.info("🎯 Scoring signals to find the best entry...")
+                        signals_only = [s for s, _ in batch_signals]
+                        msg_ids = {s.get("symbol"): mid for s, mid in batch_signals}
+
+                        scored = score_signals_batch(
+                            signals=signals_only,
+                            bybit=bybit,
+                            category=CATEGORY,
+                            max_allowed_leg=MAX_ALLOWED_LEG,
+                            swing_lookback=SWING_LOOKBACK,
+                            trend_candles=TREND_CANDLES,
+                            log=log
+                        )
+
+                        best_signals = select_best_signals(
+                            scored_signals=scored,
+                            max_count=MAX_SIGNALS_PER_BATCH,
+                            log=log
+                        )
+
+                        # Convert back to (signal, mid) tuples
+                        batch_signals = [(s, msg_ids.get(s.get("symbol"), 0)) for s in best_signals]
+
+                    # Execute selected signals
+                    for sig, mid in batch_signals:
+                        trade_id = f"{sig['symbol']}|{sig['side']}|{int(time.time())}"
+                        log.info(f"🔄 Placing entry order for {sig['symbol']}...")
+                        oid = engine.place_conditional_entry(sig, trade_id)
+                        if not oid:
+                            log.warning(f"❌ Entry order failed for {sig['symbol']}")
+                            continue
+
+                        # Get risk info for tracking (with SL for dynamic sizing)
+                        sl_price = float(sig.get("sl_price")) if sig.get("sl_price") else None
+                        entry_price = float(sig["trigger"])
+                        risk_info = engine.get_risk_info(sl_price=sl_price, entry_price=entry_price, side=sig["side"])
+
+                        # store trade
+                        st.setdefault("open_trades", {})[trade_id] = {
+                            "id": trade_id,
+                            "symbol": sig["symbol"],
+                            "order_side": "Sell" if sig["side"] == "sell" else "Buy",
+                            "pos_side": "Short" if sig["side"] == "sell" else "Long",
+                            "trigger": float(sig["trigger"]),
+                            "tp_prices": sig.get("tp_prices") or [],
+                            "tp_splits": None,  # engine uses config
+                            "dca_prices": sig.get("dca_prices") or [],
+                            "sl_price": sig.get("sl_price"),
+                            "entry_order_id": oid,
+                            "status": "pending",
+                            "placed_ts": time.time(),
+                            "base_qty": engine.calc_base_qty(sig["symbol"], float(sig["trigger"])),
+                            "raw": sig.get("raw", ""),
+                            "discord_msg_id": mid,  # Track message ID for updates
+                            "risk_pct": risk_info["risk_pct"],
+                            "risk_amount": risk_info["risk_amount"],
+                            "equity_at_entry": risk_info["equity_at_entry"],
+                            "leverage": risk_info["leverage"],
+                            "timeframe": sig.get("timeframe"),  # H1, M15, H4 for SQL filtering
+                        }
+                        inc_trades_today()
+                        log.info(f"🟡 ENTRY PLACED {sig['symbol']} {sig['side'].upper()} trigger={sig['trigger']} (id={trade_id})")
+
+                        # stop if we hit limits mid-batch
+                        active = [tr for tr in st.get("open_trades", {}).values() if tr.get("status") in ("pending","open")]
+                        if len(active) >= MAX_CONCURRENT_TRADES or trades_today() >= MAX_TRADES_PER_DAY:
+                            break
 
                 st["last_discord_id"] = str(max_seen) if max_seen else after
 
@@ -432,7 +505,15 @@ def main():
             log.exception(f"Loop error: {e}")
             time.sleep(3)
 
-        time.sleep(max(1, POLL_SECONDS + random.uniform(0, max(0, POLL_JITTER_MAX))))
+        # Sleep until next poll
+        if POLL_QUARTER_HOUR:
+            # Quarter-hour mode: sleep until XX:00, XX:15, XX:30, XX:45 + buffer
+            wait_sec, next_time = seconds_until_next_quarter_hour(POLL_QUARTER_BUFFER_SEC)
+            log.info(f"💤 Next poll at {next_time.strftime('%H:%M:%S')} (in {wait_sec:.0f}s)")
+            time.sleep(wait_sec)
+        else:
+            # Regular interval polling
+            time.sleep(max(1, POLL_SECONDS + random.uniform(0, max(0, POLL_JITTER_MAX))))
 
 if __name__ == "__main__":
     main()

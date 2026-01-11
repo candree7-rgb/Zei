@@ -174,7 +174,7 @@ def export_trade(trade: Dict[str, Any]) -> bool:
                         realized_pnl, pnl_pct_margin, pnl_pct_equity, margin_used, equity_at_close,
                         is_win, exit_reason,
                         tp_fills, tp_count, dca_fills, dca_count, trailing_used,
-                        bot_id, risk_pct, risk_amount, equity_at_entry, leverage
+                        bot_id, risk_pct, risk_amount, equity_at_entry, leverage, timeframe
                     ) VALUES (
                         %s, %s, %s, %s,
                         %s, %s, %s,
@@ -182,7 +182,7 @@ def export_trade(trade: Dict[str, Any]) -> bool:
                         %s, %s, %s, %s, %s,
                         %s, %s,
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         closed_at = EXCLUDED.closed_at,
@@ -201,7 +201,8 @@ def export_trade(trade: Dict[str, Any]) -> bool:
                         risk_pct = EXCLUDED.risk_pct,
                         risk_amount = EXCLUDED.risk_amount,
                         equity_at_entry = EXCLUDED.equity_at_entry,
-                        leverage = EXCLUDED.leverage
+                        leverage = EXCLUDED.leverage,
+                        timeframe = EXCLUDED.timeframe
                 """, (
                     trade.get("id"), trade.get("symbol"), trade.get("pos_side"), trade.get("order_side"),
                     trade.get("entry_price"), trade.get("trigger"), trade.get("avg_entry"),
@@ -216,7 +217,7 @@ def export_trade(trade: Dict[str, Any]) -> bool:
                     trade.get("trailing_started", False),
                     bot_id,
                     trade.get("risk_pct"), trade.get("risk_amount"), trade.get("equity_at_entry"),
-                    trade.get("leverage")
+                    trade.get("leverage"), trade.get("timeframe")
                 ))
             except psycopg2.errors.UndefinedColumn:
                 # Column doesn't exist yet - fall back to old schema without bot_id

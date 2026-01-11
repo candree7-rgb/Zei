@@ -32,6 +32,10 @@ BOT_ID = _get("BOT_ID", "ao")  # Unique identifier for this bot instance
 # Signal Parser Version: "v1" = original embed format, "v2" = AO plain text, "v3" = Crypto Signals (H1/M15)
 SIGNAL_PARSER_VERSION = _get("SIGNAL_PARSER_VERSION", "v3").lower()
 
+# Allowed timeframes for V3 signals (comma-separated)
+# Example: "H1,M15,H4" or just "H1,M15"
+ALLOWED_TIMEFRAMES = [x.strip().upper() for x in _get("ALLOWED_TIMEFRAMES", "H1,M15,H4").split(",") if x.strip()]
+
 RECV_WINDOW = _get("RECV_WINDOW","5000")
 
 # Trading
@@ -40,6 +44,25 @@ QUOTE    = _get("QUOTE","USDT").upper()
 
 LEVERAGE = _get_int("LEVERAGE","5")
 RISK_PCT = _get_float("RISK_PCT","5")
+
+# ============================================================
+# DYNAMIC POSITION SIZING (Risk-Based)
+# ============================================================
+# Calculate position size based on SL distance for consistent risk per trade
+# This is the mathematically optimal approach (Fixed Fractional / Kelly-lite)
+
+# Enable dynamic sizing (position size based on SL distance)
+DYNAMIC_SIZING_ENABLED = _get_bool("DYNAMIC_SIZING_ENABLED", "true")
+
+# Risk per trade as % of equity (how much you lose if SL hits)
+# 2% is conservative, 5% is aggressive
+RISK_PER_TRADE_PCT = _get_float("RISK_PER_TRADE_PCT", "2.0")
+
+# Maximum leverage to use (safety cap)
+MAX_LEVERAGE = _get_int("MAX_LEVERAGE", "50")
+
+# Minimum leverage (for very tight SL)
+MIN_LEVERAGE = _get_int("MIN_LEVERAGE", "5")
 
 # Limits / Safety
 MAX_CONCURRENT_TRADES = _get_int("MAX_CONCURRENT_TRADES","3")
@@ -78,6 +101,52 @@ CAP_SL_DISTANCE_PCT = _get_float("CAP_SL_DISTANCE_PCT", "0")
 # Set to 0 to disable this filter (V3 signals have no leverage info)
 MIN_SIGNAL_LEVERAGE = _get_int("MIN_SIGNAL_LEVERAGE", "0")
 
+# ============================================================
+# TREND LEG FILTER (Zeiierman Strategy)
+# ============================================================
+# Analyzes price action to determine trend leg and skip late entries
+# Best entries: Leg 1-3 (early trend, after pullbacks #1-#2)
+# Skip: Leg 4-5 (late trend, higher reversal risk)
+
+# Enable/disable leg filter
+LEG_FILTER_ENABLED = _get_bool("LEG_FILTER_ENABLED", "true")
+
+# Maximum allowed leg for entry (1-3 recommended, 0 = disabled)
+# Leg 1-2: Best R:R, fresh momentum
+# Leg 3: Still good, but watch for exhaustion
+# Leg 4-5: Skip (late trend, "last flush" risk)
+MAX_ALLOWED_LEG = _get_int("MAX_ALLOWED_LEG", "3")
+
+# Swing detection lookback (how many candles to look on each side)
+# Higher = fewer swing points, more reliable but less sensitive
+# Lower = more swing points, more sensitive but more noise
+SWING_LOOKBACK = _get_int("SWING_LOOKBACK", "5")
+
+# Number of candles to fetch for trend analysis
+# More candles = better trend context, but slower
+TREND_CANDLES = _get_int("TREND_CANDLES", "200")
+
+# Skip signals where trend direction doesn't match signal side
+# BUY should be in uptrend, SELL should be in downtrend
+REQUIRE_TREND_ALIGNMENT = _get_bool("REQUIRE_TREND_ALIGNMENT", "true")
+
+# ============================================================
+# SIGNAL BATCHING (Multiple signals at same time)
+# ============================================================
+# When multiple signals arrive at the same time (e.g., every 15 min),
+# collect them, analyze all, and pick the BEST one based on score.
+
+# Enable signal batching (analyze all, pick best)
+SIGNAL_BATCH_ENABLED = _get_bool("SIGNAL_BATCH_ENABLED", "true")
+
+# Time window to collect signals (seconds)
+# Signals within this window are batched together
+SIGNAL_BATCH_WINDOW_SEC = _get_int("SIGNAL_BATCH_WINDOW_SEC", "30")
+
+# Maximum signals to trade per batch (usually 1)
+# Set to 1 to only trade the best signal per batch
+MAX_SIGNALS_PER_BATCH = _get_int("MAX_SIGNALS_PER_BATCH", "1")
+
 # TP_SPLITS: percentage of position to close at each TP level
 # Example: 50,50 means 100% total (50% at TP1, 50% at TP2)
 # For V3 signals with 2 TPs, use: 50,50
@@ -109,6 +178,11 @@ DCA_QTY_MULTS = [float(x) for x in _get("DCA_QTY_MULTS","1.5").split(",") if x.s
 POLL_SECONDS    = _get_int("POLL_SECONDS","15")
 POLL_JITTER_MAX = _get_int("POLL_JITTER_MAX","5")
 SIGNAL_UPDATE_INTERVAL_SEC = _get_int("SIGNAL_UPDATE_INTERVAL_SEC", "15")  # How often to re-check signals for SL/TP/DCA updates
+
+# Quarter-hour polling mode (for signal providers that only send at XX:00, XX:15, XX:30, XX:45)
+# When enabled, bot sleeps until next quarter-hour + buffer instead of polling every POLL_SECONDS
+POLL_QUARTER_HOUR = _get_bool("POLL_QUARTER_HOUR", "true")  # Enable quarter-hour polling
+POLL_QUARTER_BUFFER_SEC = _get_int("POLL_QUARTER_BUFFER_SEC", "3")  # Seconds after quarter-hour to poll (e.g., 3 = poll at XX:00:03)
 
 # Misc
 DRY_RUN     = _get_bool("DRY_RUN","true")

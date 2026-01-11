@@ -2,6 +2,8 @@ import re
 import hashlib
 from typing import Any, Dict, Optional, List
 
+from config import ALLOWED_TIMEFRAMES
+
 NUM = r"([0-9]+(?:\.[0-9]+)?)"
 
 # ============================================================
@@ -27,8 +29,15 @@ NUM = r"([0-9]+(?:\.[0-9]+)?)"
 # Timeframe: M15
 # ============================================================
 
-# ALLOWED TIMEFRAMES (only H1 and M15)
-ALLOWED_TIMEFRAMES = ["H1", "M15"]
+# ALLOWED_TIMEFRAMES is imported from config.py (set via ENV)
+
+# ALLOWED QUOTE CURRENCIES (skip BTC, ETH pairs etc.)
+ALLOWED_QUOTES = ["USD", "USDT"]
+
+# SYMBOL MAPPING for Bybit (some coins have different names)
+SYMBOL_MAP = {
+    "LUNA": "LUNA2",  # Terra Luna Classic is LUNA2 on Bybit
+}
 
 # Signal header: "🎯 Trading Signals 🎯"
 RE_HEADER = re.compile(
@@ -91,12 +100,19 @@ def parse_signal(text: str, quote: str = "USDT") -> Optional[Dict[str, Any]]:
 
     side_word = ms.group(1).upper()
     base = ms.group(2).upper()
-    quote_from_signal = ms.group(3).upper()  # USD from signal
+    quote_from_signal = ms.group(3).upper()  # USD or USDT from signal
     trigger = float(ms.group(4))
+
+    # Only allow USD and USDT pairs (skip BTC, ETH pairs etc.)
+    if quote_from_signal not in ALLOWED_QUOTES:
+        return None
 
     side = "sell" if side_word == "SELL" else "buy"
 
-    # Convert ATOM/USD to ATOMUSDT for Bybit
+    # Apply symbol mapping (e.g., LUNA → LUNA2 for Bybit)
+    base = SYMBOL_MAP.get(base, base)
+
+    # Convert to Bybit symbol (always USDT perpetual)
     symbol = f"{base}{quote}"
 
     # Parse TP prices

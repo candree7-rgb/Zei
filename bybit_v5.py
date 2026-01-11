@@ -69,6 +69,45 @@ class BybitV5:
             raise RuntimeError("No instrument info")
         return lst[0]
 
+    def klines(self, category: str, symbol: str, interval: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Get kline/candlestick data.
+
+        Args:
+            category: "linear" for USDT perpetual
+            symbol: e.g., "BTCUSDT"
+            interval: "1" (1min), "15" (15min), "60" (1h), "240" (4h), "D" (1day)
+            limit: Number of candles (max 1000)
+
+        Returns:
+            List of candles, each with: [startTime, open, high, low, close, volume, turnover]
+            Ordered from newest to oldest (index 0 = most recent)
+        """
+        params = {
+            "category": category,
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+        }
+        r = requests.get(f"{self.base}/v5/market/kline", params=params, timeout=15)
+        r.raise_for_status()
+        data = self._check(r.json())
+        raw_list = (data.get("result") or {}).get("list") or []
+
+        # Convert to dict format for easier use
+        candles = []
+        for candle in raw_list:
+            candles.append({
+                "timestamp": int(candle[0]),
+                "open": float(candle[1]),
+                "high": float(candle[2]),
+                "low": float(candle[3]),
+                "close": float(candle[4]),
+                "volume": float(candle[5]),
+                "turnover": float(candle[6]),
+            })
+        return candles
+
     # ---------- Account ----------
     def wallet_equity(self, account_type: str = "UNIFIED") -> float:
         params = {"accountType": account_type}
