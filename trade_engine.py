@@ -18,6 +18,7 @@ from config import (
     DRY_RUN, BOT_ID,
     LEG_FILTER_ENABLED, MAX_ALLOWED_LEG, SWING_LOOKBACK, TREND_CANDLES, REQUIRE_TREND_ALIGNMENT,
     HTF_ALIGNMENT_ENABLED, REQUIRE_PULLBACK_ENTRY,
+    MIN_SWING_ATR, MIN_REVERSAL_ATR,
     DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
     get_entry_expiration
 )
@@ -495,12 +496,14 @@ class TradeEngine:
                 candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
 
                 if candles and len(candles) >= 50:
-                    # Analyze trend and get recommendation
+                    # Analyze trend and get recommendation (with ATR-based significance filtering)
                     analysis = analyze_trend(
                         candles=candles,
                         signal_side=sig["side"],
                         max_allowed_leg=MAX_ALLOWED_LEG,
                         swing_lookback=SWING_LOOKBACK,
+                        min_swing_atr=MIN_SWING_ATR,
+                        min_reversal_atr=MIN_REVERSAL_ATR,
                         log=self.log
                     )
 

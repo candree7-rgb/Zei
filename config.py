@@ -158,6 +158,25 @@ SWING_LOOKBACK = _get_int("SWING_LOOKBACK", "5")
 # More candles = better trend context, but slower
 TREND_CANDLES = _get_int("TREND_CANDLES", "200")
 
+# ============================================================
+# ATR-BASED SWING SIGNIFICANCE (for 90%+ accuracy)
+# ============================================================
+# Only count swings that move significantly (in ATR multiples)
+# This filters out noise and minor counter-moves
+
+# Minimum swing size in ATR multiples
+# A swing must move at least MIN_SWING_ATR * ATR to be counted
+# Higher = fewer swings, less noise (1.5 recommended)
+# Lower = more swings, more sensitive
+MIN_SWING_ATR = _get_float("MIN_SWING_ATR", "1.5")
+
+# Minimum reversal size in ATR multiples
+# A trend reversal must be at least MIN_REVERSAL_ATR * ATR
+# This prevents resetting leg count at minor counter-moves
+# Higher = only major reversals reset count (3.0 recommended)
+# Lower = more frequent resets
+MIN_REVERSAL_ATR = _get_float("MIN_REVERSAL_ATR", "3.0")
+
 # Skip signals where trend direction doesn't match signal side
 # BUY should be in uptrend, SELL should be in downtrend
 REQUIRE_TREND_ALIGNMENT = _get_bool("REQUIRE_TREND_ALIGNMENT", "true")
