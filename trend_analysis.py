@@ -24,6 +24,46 @@ class TrendDirection(Enum):
     NEUTRAL = "neutral"
 
 
+def calculate_atr(candles: List[Dict[str, Any]], period: int = 14) -> float:
+    """
+    Calculate Average True Range for measuring swing significance.
+
+    Args:
+        candles: List of candles (newest first from Bybit API)
+        period: ATR period (default 14)
+
+    Returns:
+        ATR value
+    """
+    if len(candles) < period + 1:
+        # Not enough data, estimate from recent range
+        if candles:
+            ranges = [c["high"] - c["low"] for c in candles[:min(10, len(candles))]]
+            return sum(ranges) / len(ranges) if ranges else 0.0
+        return 0.0
+
+    # Reverse so oldest first
+    candles_ordered = list(reversed(candles))
+
+    true_ranges = []
+    for i in range(1, len(candles_ordered)):
+        high = candles_ordered[i]["high"]
+        low = candles_ordered[i]["low"]
+        prev_close = candles_ordered[i-1]["close"]
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+        true_ranges.append(tr)
+
+    # Simple ATR (average of last `period` true ranges)
+    if len(true_ranges) >= period:
+        return sum(true_ranges[-period:]) / period
+    return sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
+
+
 @dataclass
 class SwingPoint:
     """Represents a swing high or low point."""
@@ -114,6 +154,144 @@ def detect_swing_points(candles: List[Dict[str, Any]], lookback: int = 5) -> Lis
     # Sort by index (time order)
     swing_points.sort(key=lambda sp: sp.index)
     return swing_points
+
+
+def filter_significant_swings(
+    swings: List[SwingPoint],
+    atr: float,
+    min_swing_atr: float = 1.5
+) -> List[SwingPoint]:
+    """
+    Filter swings to only keep significant ones (move at least min_swing_atr * ATR).
+
+    This removes noise from the swing detection and keeps only meaningful
+    price movements that represent real trend legs.
+
+    Args:
+        swings: List of detected swing points
+        atr: Average True Range value
+        min_swing_atr: Minimum swing size in ATR multiples (default 1.5)
+
+    Returns:
+        Filtered list of significant swing points
+    """
+    if not swings or atr <= 0:
+        return swings
+
+    min_move = atr * min_swing_atr
+    significant = []
+
+    for i, swing in enumerate(swings):
+        if i == 0:
+            significant.append(swing)
+            continue
+
+        # Find previous swing of opposite type
+        prev_opposite = None
+        for j in range(i - 1, -1, -1):
+            if swings[j].is_high != swing.is_high:
+                prev_opposite = swings[j]
+                break
+
+        if prev_opposite is None:
+            significant.append(swing)
+            continue
+
+        # Calculate move size from opposite swing
+        move_size = abs(swing.price - prev_opposite.price)
+
+        # Only keep if move is significant
+        if move_size >= min_move:
+            significant.append(swing)
+
+    return significant
+
+
+def find_major_trend_reversal(
+    swings: List[SwingPoint],
+    labels: List[str],
+    direction: TrendDirection,
+    atr: float,
+    min_reversal_atr: float = 3.0
+) -> int:
+    """
+    Find where a MAJOR trend reversal happened (not minor counter-moves).
+
+    Instead of resetting at every HH/LL, we look for significant price structure
+    changes that represent a real trend change.
+
+    Args:
+        swings: List of swing points
+        labels: Swing labels (HH, HL, LH, LL)
+        direction: Current trend direction
+        atr: Average True Range
+        min_reversal_atr: Minimum reversal size in ATR (default 3.0)
+
+    Returns:
+        Index in labels where major reversal happened
+    """
+    if not labels or not swings or direction == TrendDirection.NEUTRAL:
+        return 0
+
+    min_reversal_size = atr * min_reversal_atr
+
+    # For uptrend: find where we made a significant HL after significant LL (trend change)
+    # For downtrend: find where we made a significant LH after significant HH (trend change)
+
+    if direction == TrendDirection.UP:
+        # Walk backwards to find the MAJOR low that started this uptrend
+        # This is where we made a higher low that was significantly higher than previous lows
+        best_reversal_idx = 0
+        last_significant_low = None
+        last_significant_low_idx = 0
+
+        for i, (swing, label) in enumerate(zip(swings, labels)):
+            if not swing.is_high:  # It's a low
+                if last_significant_low is not None:
+                    # Check if this low is significantly higher (confirming uptrend)
+                    if swing.price > last_significant_low + min_reversal_size:
+                        # Found major reversal point
+                        best_reversal_idx = last_significant_low_idx
+                        break
+                last_significant_low = swing.price
+                last_significant_low_idx = i
+
+        # If no major reversal found, use the last LL as start
+        if best_reversal_idx == 0:
+            for i in range(len(labels) - 1, -1, -1):
+                if labels[i] == "LL":
+                    best_reversal_idx = i + 1
+                    break
+
+        return min(best_reversal_idx, len(labels) - 1)
+
+    elif direction == TrendDirection.DOWN:
+        # Walk backwards to find the MAJOR high that started this downtrend
+        best_reversal_idx = 0
+        last_significant_high = None
+        last_significant_high_idx = 0
+
+        for i, (swing, label) in enumerate(zip(swings, labels)):
+            if swing.is_high:  # It's a high
+                if last_significant_high is not None:
+                    # Check if this high is significantly lower (confirming downtrend)
+                    if swing.price < last_significant_high - min_reversal_size:
+                        # Found major reversal point
+                        best_reversal_idx = last_significant_high_idx
+                        break
+                last_significant_high = swing.price
+                last_significant_high_idx = i
+
+        # If no major reversal found, use the last HH as start
+        if best_reversal_idx == 0:
+            for i in range(len(labels) - 1, -1, -1):
+                if labels[i] == "HH":
+                    best_reversal_idx = i + 1
+                    break
+
+        return min(best_reversal_idx, len(labels) - 1)
+
+    return 0
 
 
 def classify_swing_sequence(swings: List[SwingPoint]) -> Tuple[TrendDirection, List[str]]:
@@ -275,27 +453,128 @@ def count_legs(swings: List[SwingPoint], labels: List[str], direction: TrendDire
     return leg_count, in_pullback
 
 
+def count_significant_legs(
+    swings: List[SwingPoint],
+    labels: List[str],
+    direction: TrendDirection,
+    atr: float,
+    min_swing_atr: float = 1.5,
+    min_reversal_atr: float = 3.0
+) -> Tuple[int, bool, int, List[str]]:
+    """
+    Count trend legs using ATR-based significance filtering.
+
+    Only counts legs that represent significant price moves (not noise).
+    Uses major reversal detection instead of resetting at every HH/LL.
+
+    Args:
+        swings: List of swing points
+        labels: Swing labels
+        direction: Trend direction
+        atr: Average True Range
+        min_swing_atr: Minimum swing size in ATR multiples
+        min_reversal_atr: Minimum reversal size in ATR multiples
+
+    Returns:
+        (leg_count, is_pullback, trend_start_idx, relevant_labels)
+    """
+    if not labels or direction == TrendDirection.NEUTRAL:
+        return 0, False, 0, []
+
+    # Filter to only significant swings
+    significant_swings = filter_significant_swings(swings, atr, min_swing_atr)
+
+    # Re-label the significant swings
+    sig_labels = []
+    last_high = None
+    last_low = None
+
+    for swing in significant_swings:
+        if swing.is_high:
+            if last_high is not None:
+                if swing.price > last_high:
+                    sig_labels.append("HH")
+                else:
+                    sig_labels.append("LH")
+            else:
+                sig_labels.append("H")
+            last_high = swing.price
+        else:
+            if last_low is not None:
+                if swing.price > last_low:
+                    sig_labels.append("HL")
+                else:
+                    sig_labels.append("LL")
+            else:
+                sig_labels.append("L")
+            last_low = swing.price
+
+    # Find major trend reversal (not just any HH/LL)
+    trend_start_idx = find_major_trend_reversal(
+        significant_swings, sig_labels, direction, atr, min_reversal_atr
+    )
+
+    # Count legs from the major reversal point
+    relevant_labels = sig_labels[trend_start_idx:] if trend_start_idx < len(sig_labels) else []
+
+    leg_count = 0
+    in_pullback = False
+
+    if direction == TrendDirection.UP:
+        for label in relevant_labels:
+            if label == "HH":
+                leg_count += 1
+                in_pullback = False
+            elif label == "HL":
+                in_pullback = True
+
+    elif direction == TrendDirection.DOWN:
+        for label in relevant_labels:
+            if label == "LL":
+                leg_count += 1
+                in_pullback = False
+            elif label == "LH":
+                in_pullback = True
+
+    # Minimum leg 1 if we have any trend structure
+    if leg_count == 0 and len(relevant_labels) > 0:
+        leg_count = 1
+
+    return leg_count, in_pullback, trend_start_idx, relevant_labels
+
+
 def analyze_trend(
     candles: List[Dict[str, Any]],
     signal_side: str,  # "buy" or "sell"
     max_allowed_leg: int = 3,
     swing_lookback: int = 5,
+    min_swing_atr: float = 1.5,
+    min_reversal_atr: float = 3.0,
     log: Optional[logging.Logger] = None
 ) -> TrendAnalysis:
     """
     Analyze trend and determine if signal should be taken.
+
+    Uses ATR-based filtering for accurate leg detection:
+    - Only counts significant swings (moves >= min_swing_atr * ATR)
+    - Only resets leg count at major reversals (moves >= min_reversal_atr * ATR)
 
     Args:
         candles: Candlestick data from Bybit (newest first)
         signal_side: "buy" for long, "sell" for short
         max_allowed_leg: Maximum leg number to allow entry (default 3)
         swing_lookback: Lookback period for swing detection (default 5)
+        min_swing_atr: Minimum swing size in ATR multiples (default 1.5)
+        min_reversal_atr: Minimum reversal size in ATR multiples (default 3.0)
         log: Optional logger
 
     Returns:
         TrendAnalysis with recommendation
     """
-    # Detect swing points
+    # Calculate ATR for significance filtering
+    atr = calculate_atr(candles)
+
+    # Detect all swing points
     swings = detect_swing_points(candles, lookback=swing_lookback)
 
     if len(swings) < 4:
@@ -309,20 +588,29 @@ def analyze_trend(
             reason=f"Not enough swing points ({len(swings)}) to determine trend"
         )
 
-    # Classify swing sequence
-    direction, labels = classify_swing_sequence(swings)
+    # Filter to significant swings for trend classification
+    significant_swings = filter_significant_swings(swings, atr, min_swing_atr)
 
-    # Find trend start for logging
-    trend_start_idx = find_trend_start_index(labels, direction)
-    relevant_labels = labels[trend_start_idx:] if trend_start_idx < len(labels) else []
+    if len(significant_swings) < 4:
+        # Fall back to all swings if not enough significant ones
+        significant_swings = swings
+        if log:
+            log.info(f"📊 Not enough significant swings, using all {len(swings)} swings")
 
-    # Count legs
-    current_leg, is_pullback = count_legs(swings, labels, direction)
+    # Classify swing sequence using significant swings
+    direction, labels = classify_swing_sequence(significant_swings)
+
+    # Count legs using ATR-based detection
+    current_leg, is_pullback, trend_start_idx, relevant_labels = count_significant_legs(
+        swings, labels, direction, atr, min_swing_atr, min_reversal_atr
+    )
 
     if log:
         log.info(f"📊 Trend Analysis: {direction.value}, Leg {current_leg}, Pullback={is_pullback}")
-        log.info(f"   Full swing sequence: {labels[-15:]}")
-        log.info(f"   Trend started at index {trend_start_idx}, counting from: {relevant_labels}")
+        log.info(f"   ATR={atr:.4f}, MinSwing={atr * min_swing_atr:.4f}, MinReversal={atr * min_reversal_atr:.4f}")
+        log.info(f"   All swings: {len(swings)}, Significant swings: {len(significant_swings)}")
+        log.info(f"   Significant swing labels: {labels[-12:]}")
+        log.info(f"   Major reversal at idx {trend_start_idx}, counting from: {relevant_labels}")
 
     # Validate signal against trend
     # BUY signal should be in UPTREND
