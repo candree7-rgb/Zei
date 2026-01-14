@@ -1139,6 +1139,63 @@ class TradeEngine:
                 tr["trailing_started"] = True
                 self.log.info(f"✅ TRAILING STARTED {tr['symbol']} after TP{tp_num}")
 
+            # CRITICAL: Immediate check if all TPs hit but position still open
+            # This catches the case where TP limit orders don't fill due to fast price movement
+            tp_count = len(tr.get("tp_prices") or [])
+            if tp_num >= tp_count:
+                # Last TP was supposedly hit - verify position is actually closed
+                self._verify_and_close_position(tr)
+
+    def _verify_and_close_position(self, tr: Dict[str, Any], delay_sec: float = 2.0) -> None:
+        """Immediately verify position is closed after last TP - market close if still open.
+
+        Called right after last TP fill is detected. Waits a short delay to allow
+        the exchange to process the fill, then verifies position is actually closed.
+
+        Args:
+            tr: Trade dict
+            delay_sec: Seconds to wait before checking (default 2s for exchange processing)
+        """
+        symbol = tr["symbol"]
+        side = tr["order_side"]
+
+        if DRY_RUN:
+            return
+
+        # Short delay to allow exchange to process the fill
+        time.sleep(delay_sec)
+
+        try:
+            size, _ = self.position_size_avg(symbol)
+            if size == 0:
+                self.log.info(f"✅ Position {symbol} verified closed after all TPs")
+                return
+
+            # Position still open - this is the orphan case!
+            self.log.warning(f"⚠️ POSITION STILL OPEN {symbol} after all TPs! Size={size} - market closing NOW")
+
+            # Cancel any remaining orders
+            self._cancel_all_trade_orders(tr)
+
+            # Market close immediately
+            close_side = "Sell" if side == "Buy" else "Buy"
+            try:
+                self.bybit.place_order(
+                    category=CATEGORY,
+                    symbol=symbol,
+                    side=close_side,
+                    order_type="Market",
+                    qty=str(size),
+                    reduce_only=True,
+                )
+                self.log.info(f"🚨 MARKET CLOSE {symbol} - orphan position closed @ market")
+                tr["exit_reason"] = "orphan_market_close"
+            except Exception as e:
+                self.log.error(f"❌ Failed to market close {symbol}: {e}")
+
+        except Exception as e:
+            self.log.warning(f"Verify position check failed for {symbol}: {e}")
+
     def _move_sl(self, symbol: str, sl_price: float, max_retries: int = 3) -> bool:
         """Move SL with retry logic for volatile markets."""
         rules = self._get_instrument_rules(symbol)
