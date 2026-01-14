@@ -407,6 +407,7 @@ def main():
             engine.cancel_entries_past_tp()   # Cancel if price already hit TPs (move over)
             engine.cleanup_closed_trades()
             engine.check_tp_fills_fallback()  # Catch TP1 fills if WS missed
+            engine.reconcile_orphaned_positions()  # Market close if TPs passed but orders didn't fill
             engine.check_position_alerts()    # Send Telegram alerts if position P&L crosses thresholds
             engine.log_daily_stats()          # Log stats once per day
 
