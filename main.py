@@ -385,6 +385,89 @@ def main():
     monitor_thread.start()
     log.info(f"🔍 Pending entry monitor started ({PENDING_MONITOR_INTERVAL_SEC}s interval)")
 
+    # ----- Orphan position monitor thread (checks if TPs passed but position still open) -----
+    def orphan_position_monitor():
+        """Fast background check for open positions - market close if all TPs passed.
+
+        Runs every 60 seconds to catch positions where TP limit orders didn't fill
+        because price moved too fast.
+        """
+        ORPHAN_CHECK_INTERVAL = 60  # Check every 60 seconds
+
+        while True:
+            try:
+                time.sleep(ORPHAN_CHECK_INTERVAL)
+
+                open_trades = [tr for tr in st.get("open_trades", {}).values()
+                              if tr.get("status") == "open" and tr.get("post_orders_placed")]
+
+                if not open_trades:
+                    continue
+
+                for tr in open_trades:
+                    symbol = tr["symbol"]
+                    side = tr["order_side"]
+                    tp_prices = tr.get("tp_prices") or []
+
+                    if len(tp_prices) < 2:
+                        continue
+
+                    last_tp = float(tp_prices[-1])  # TP2 for most signals
+
+                    try:
+                        current_price = bybit.last_price(CATEGORY, symbol)
+
+                        # Check if price went past ALL TPs
+                        price_past_all_tps = False
+                        if side == "Buy":  # LONG: TPs above entry
+                            if current_price >= last_tp:
+                                price_past_all_tps = True
+                        else:  # SHORT: TPs below entry
+                            if current_price <= last_tp:
+                                price_past_all_tps = True
+
+                        if not price_past_all_tps:
+                            continue
+
+                        # Check if position is still open
+                        size, _ = engine.position_size_avg(symbol)
+                        if size == 0:
+                            continue  # Position closed normally
+
+                        # Position still open but price past all TPs - market close!
+                        log.warning(f"⚠️ [OrphanMonitor] {symbol}: Price {current_price} past all TPs {tp_prices}, size={size}")
+
+                        # Cancel all open orders first
+                        engine._cancel_all_trade_orders(tr)
+
+                        # Market close the position
+                        close_side = "Sell" if side == "Buy" else "Buy"
+                        try:
+                            bybit.place_order(
+                                category=CATEGORY,
+                                symbol=symbol,
+                                side=close_side,
+                                order_type="Market",
+                                qty=str(size),
+                                reduce_only=True,
+                            )
+                            log.info(f"🚨 [OrphanMonitor] MARKET CLOSE {symbol} @ market (was {size})")
+                            tr["exit_reason"] = "orphan_market_close"
+                            save_state(STATE_FILE, st)
+                        except Exception as e:
+                            log.error(f"❌ [OrphanMonitor] Failed to close {symbol}: {e}")
+
+                    except Exception as e:
+                        log.debug(f"Orphan check failed for {symbol}: {e}")
+
+            except Exception as e:
+                log.debug(f"Orphan monitor error: {e}")
+                time.sleep(5)
+
+    orphan_thread = threading.Thread(target=orphan_position_monitor, daemon=True)
+    orphan_thread.start()
+    log.info(f"🔍 Orphan position monitor started (60s interval)")
+
     # ----- helper: limits -----
     def trades_today() -> int:
         return int(st.get("daily_counts", {}).get(utc_day_key(), 0))
@@ -407,6 +490,7 @@ def main():
             engine.cancel_entries_past_tp()   # Cancel if price already hit TPs (move over)
             engine.cleanup_closed_trades()
             engine.check_tp_fills_fallback()  # Catch TP1 fills if WS missed
+            engine.reconcile_orphaned_positions()  # Market close if TPs passed but orders didn't fill
             engine.check_position_alerts()    # Send Telegram alerts if position P&L crosses thresholds
             engine.log_daily_stats()          # Log stats once per day
 

@@ -1139,6 +1139,63 @@ class TradeEngine:
                 tr["trailing_started"] = True
                 self.log.info(f"✅ TRAILING STARTED {tr['symbol']} after TP{tp_num}")
 
+            # CRITICAL: Immediate check if all TPs hit but position still open
+            # This catches the case where TP limit orders don't fill due to fast price movement
+            tp_count = len(tr.get("tp_prices") or [])
+            if tp_num >= tp_count:
+                # Last TP was supposedly hit - verify position is actually closed
+                self._verify_and_close_position(tr)
+
+    def _verify_and_close_position(self, tr: Dict[str, Any], delay_sec: float = 2.0) -> None:
+        """Immediately verify position is closed after last TP - market close if still open.
+
+        Called right after last TP fill is detected. Waits a short delay to allow
+        the exchange to process the fill, then verifies position is actually closed.
+
+        Args:
+            tr: Trade dict
+            delay_sec: Seconds to wait before checking (default 2s for exchange processing)
+        """
+        symbol = tr["symbol"]
+        side = tr["order_side"]
+
+        if DRY_RUN:
+            return
+
+        # Short delay to allow exchange to process the fill
+        time.sleep(delay_sec)
+
+        try:
+            size, _ = self.position_size_avg(symbol)
+            if size == 0:
+                self.log.info(f"✅ Position {symbol} verified closed after all TPs")
+                return
+
+            # Position still open - this is the orphan case!
+            self.log.warning(f"⚠️ POSITION STILL OPEN {symbol} after all TPs! Size={size} - market closing NOW")
+
+            # Cancel any remaining orders
+            self._cancel_all_trade_orders(tr)
+
+            # Market close immediately
+            close_side = "Sell" if side == "Buy" else "Buy"
+            try:
+                self.bybit.place_order(
+                    category=CATEGORY,
+                    symbol=symbol,
+                    side=close_side,
+                    order_type="Market",
+                    qty=str(size),
+                    reduce_only=True,
+                )
+                self.log.info(f"🚨 MARKET CLOSE {symbol} - orphan position closed @ market")
+                tr["exit_reason"] = "orphan_market_close"
+            except Exception as e:
+                self.log.error(f"❌ Failed to market close {symbol}: {e}")
+
+        except Exception as e:
+            self.log.warning(f"Verify position check failed for {symbol}: {e}")
+
     def _move_sl(self, symbol: str, sl_price: float, max_retries: int = 3) -> bool:
         """Move SL with retry logic for volatile markets."""
         rules = self._get_instrument_rules(symbol)
@@ -1373,6 +1430,76 @@ class TradeEngine:
                         tr.setdefault("tp_fills_list", []).append(1)
                         tr["tp_fills"] = len(tr["tp_fills_list"])
                     self.log.info(f"✅ SL -> BE (fallback) {symbol} @ {be} (buffer {BE_BUFFER_PCT}%)")
+
+    def reconcile_orphaned_positions(self) -> None:
+        """Safety check: Market close positions where all TPs were passed but limit orders didn't fill.
+
+        This handles the case where price shoots through TP levels so fast that
+        limit orders don't get filled, leaving orphaned positions.
+        """
+        if DRY_RUN:
+            return
+
+        for tid, tr in list(self.state.get("open_trades", {}).items()):
+            if tr.get("status") != "open":
+                continue
+            if not tr.get("post_orders_placed"):
+                continue
+
+            symbol = tr["symbol"]
+            side = tr["order_side"]  # Buy/Sell
+            tp_prices = tr.get("tp_prices") or []
+
+            if len(tp_prices) < 2:
+                continue
+
+            # Get the last TP (TP2 for most signals)
+            last_tp = float(tp_prices[-1])
+
+            try:
+                current_price = self.bybit.last_price(CATEGORY, symbol)
+
+                # Check if price went past ALL TPs
+                price_past_all_tps = False
+                if side == "Buy":  # LONG: all TPs above entry
+                    if current_price >= last_tp:
+                        price_past_all_tps = True
+                else:  # SHORT: all TPs below entry
+                    if current_price <= last_tp:
+                        price_past_all_tps = True
+
+                if not price_past_all_tps:
+                    continue
+
+                # Check if position is still open
+                size, _ = self.position_size_avg(symbol)
+                if size == 0:
+                    continue  # Position closed normally
+
+                # Position still open but price past all TPs - market close!
+                self.log.warning(f"⚠️ ORPHANED POSITION {symbol}: Price {current_price} past all TPs {tp_prices}, size={size}")
+
+                # Cancel all open orders first
+                self._cancel_all_trade_orders(tr)
+
+                # Market close the position
+                close_side = "Sell" if side == "Buy" else "Buy"
+                try:
+                    order = self.bybit.place_order(
+                        category=CATEGORY,
+                        symbol=symbol,
+                        side=close_side,
+                        order_type="Market",
+                        qty=str(size),
+                        reduce_only=True,
+                    )
+                    self.log.info(f"🚨 MARKET CLOSE {symbol} - orphaned position closed @ market (was {size})")
+                    tr["exit_reason"] = "orphan_market_close"
+                except Exception as e:
+                    self.log.error(f"❌ Failed to market close orphaned {symbol}: {e}")
+
+            except Exception as e:
+                self.log.debug(f"Reconcile check failed for {symbol}: {e}")
 
     def cancel_expired_entries(self) -> None:
         now = time.time()
