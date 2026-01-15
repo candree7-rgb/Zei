@@ -764,15 +764,30 @@ class TradeEngine:
         tp_orders = []
         dca_orders = []
 
-        # Build TP orders
+        # Build TP orders with cumulative qty validation
         tp_to_place = min(len(tp_prices), len(splits))
         self.log.info(f"📊 Placing {tp_to_place} TPs (splits: {splits[:tp_to_place]}, remaining {100-sum(splits[:tp_to_place]):.0f}% runner)")
+        cumulative_tp_qty = 0.0
         for idx in range(tp_to_place):
             pct = float(splits[idx])
             if pct <= 0:
                 continue
             tp = self._round_price(float(tp_prices[idx]), tick_size)
-            qty = self._round_qty(size * (pct / 100.0), qty_step, min_qty)
+            raw_qty = size * (pct / 100.0)
+            qty = self._round_qty(raw_qty, qty_step, min_qty)
+
+            # Check if this TP would exceed remaining position
+            remaining_position = size - cumulative_tp_qty
+            if qty > remaining_position:
+                # Use remaining position instead if it's >= min_qty
+                if remaining_position >= min_qty:
+                    qty = self._round_qty(remaining_position, qty_step, min_qty)
+                    self.log.info(f"📊 TP{idx+1}: Adjusted qty to remaining position {qty:.8f}")
+                else:
+                    self.log.warning(f"⚠️ TP{idx+1} skipped: qty {qty:.8f} > remaining {remaining_position:.8f} (min_qty={min_qty})")
+                    continue
+
+            cumulative_tp_qty += qty
             tp_orders.append({
                 "idx": idx,
                 "body": {
@@ -788,6 +803,9 @@ class TradeEngine:
                     "orderLinkId": f"{trade['id']}:TP{idx+1}",
                 }
             })
+
+        if cumulative_tp_qty < size:
+            self.log.debug(f"📊 TP coverage: {cumulative_tp_qty:.8f}/{size:.8f} ({cumulative_tp_qty/size*100:.1f}%)")
 
         # Build DCA orders (dca_prices already loaded above for SL calculation)
         dca_to_place = min(len(dca_prices), len(DCA_QTY_MULTS))
@@ -842,8 +860,16 @@ class TradeEngine:
 
             def place_order(order_tuple):
                 order_type, o = order_tuple
-                resp = self.bybit.place_order(o["body"])
-                return order_type, o["idx"], (resp.get("result") or {}).get("orderId")
+                idx = o["idx"]
+                try:
+                    resp = self.bybit.place_order(o["body"])
+                    ret_code = resp.get("retCode", -1)
+                    if ret_code != 0:
+                        ret_msg = resp.get("retMsg", "Unknown error")
+                        raise Exception(f"{order_type}{idx+1 if order_type=='TP' else idx}: API error {ret_code} - {ret_msg}")
+                    return order_type, idx, (resp.get("result") or {}).get("orderId")
+                except Exception as e:
+                    raise Exception(f"{order_type}{idx+1 if order_type=='TP' else idx} failed: {e}")
 
             def set_sl():
                 self.bybit.set_trading_stop(ts_body)
@@ -871,11 +897,12 @@ class TradeEngine:
                             trade.setdefault("tp_order_ids", {})[str(idx+1)] = oid
                             if idx == 0:
                                 trade["tp1_order_id"] = oid
+                            self.log.info(f"✅ TP{idx+1} placed for {symbol} (id={oid})")
                         elif order_type == "DCA":
                             trade.setdefault("dca_order_ids", {})[str(idx)] = oid
                             self.log.info(f"✅ DCA{idx} placed for {symbol}")
                     except Exception as e:
-                        self.log.warning(f"Order placement failed: {e}")
+                        self.log.warning(f"⚠️ Order placement failed: {e}")
 
         trade["post_orders_placed"] = True
 
