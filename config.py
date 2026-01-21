@@ -190,6 +190,28 @@ REQUIRE_TREND_ALIGNMENT = _get_bool("REQUIRE_TREND_ALIGNMENT", "true")
 HTF_ALIGNMENT_ENABLED = _get_bool("HTF_ALIGNMENT_ENABLED", "true")
 
 # ============================================================
+# EXTREME MOVE FILTER (Flash Crash / Pump Protection)
+# ============================================================
+# Blocks trades after extreme price moves (e.g., flash crashes)
+# Uses ATR to adapt to each coin's normal volatility:
+# - BTC with low ATR: blocks at smaller % moves
+# - Altcoins with high ATR: allows larger % moves
+#
+# After extreme drop → skip LONG (don't catch falling knife)
+# After extreme pump → skip SHORT (don't short the rocket)
+
+# Enable/disable extreme move filter
+EXTREME_MOVE_FILTER_ENABLED = _get_bool("EXTREME_MOVE_FILTER_ENABLED", "true")
+
+# Block if recent candle move > X * ATR (3.0 = 3x normal volatility)
+# Higher = less sensitive (only extreme crashes)
+# Lower = more sensitive (blocks more)
+EXTREME_MOVE_ATR_MULT = _get_float("EXTREME_MOVE_ATR_MULT", "3.0")
+
+# Number of recent candles to check for extreme move
+EXTREME_MOVE_CANDLES = _get_int("EXTREME_MOVE_CANDLES", "2")
+
+# ============================================================
 # SIGNAL BATCHING (Multiple signals at same time)
 # ============================================================
 # When multiple signals arrive at the same time (e.g., every 15 min),

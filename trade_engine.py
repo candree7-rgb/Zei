@@ -20,11 +20,14 @@ from config import (
     HTF_ALIGNMENT_ENABLED, REQUIRE_PULLBACK_ENTRY,
     MIN_SWING_ATR, MIN_REVERSAL_ATR,
     DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
+    EXTREME_MOVE_FILTER_ENABLED, EXTREME_MOVE_ATR_MULT, EXTREME_MOVE_CANDLES,
     get_entry_expiration
 )
 
-# Trend analysis for leg filtering and HTF alignment
-from trend_analysis import analyze_trend, timeframe_to_interval, check_htf_alignment
+# Trend analysis for leg filtering, HTF alignment, and extreme move detection
+from trend_analysis import (
+    analyze_trend, timeframe_to_interval, check_htf_alignment, detect_extreme_move
+)
 
 def _opposite_side(side: str) -> str:
     return "Sell" if side == "Buy" else "Buy"
@@ -481,19 +484,58 @@ class TradeEngine:
                 else:
                     self.log.debug(f"R:R TP1 OK: {rr_tp1:.2f}:1 >= {MIN_RR_TP1}:1")
 
+        # Get timeframe from signal (H1, M15, etc.) - used by multiple filters
+        timeframe = sig.get("timeframe", "H1")
+        interval = timeframe_to_interval(timeframe)
+        candles = None  # Will be fetched if needed
+
+        # ============================================================
+        # EXTREME MOVE FILTER (Flash Crash / Pump Protection)
+        # ============================================================
+        # Skip trades after extreme price moves (catches falling knives)
+        if EXTREME_MOVE_FILTER_ENABLED:
+            try:
+                # Fetch candles if not already fetched
+                if candles is None:
+                    candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
+
+                if candles and len(candles) >= 20:
+                    is_extreme, move_direction, move_atr = detect_extreme_move(
+                        candles=candles,
+                        atr_multiplier=EXTREME_MOVE_ATR_MULT,
+                        num_candles=EXTREME_MOVE_CANDLES,
+                        log=self.log
+                    )
+
+                    if is_extreme:
+                        signal_side_lower = sig["side"].lower()
+                        # Block LONG after crash, block SHORT after pump
+                        if move_direction == "drop" and signal_side_lower == "buy":
+                            self.log.info(f"⏭️  SKIP {symbol} – Extreme drop detected ({move_atr:.1f}x ATR) - don't catch falling knife")
+                            return None
+                        elif move_direction == "pump" and signal_side_lower == "sell":
+                            self.log.info(f"⏭️  SKIP {symbol} – Extreme pump detected ({move_atr:.1f}x ATR) - don't short the rocket")
+                            return None
+                        else:
+                            self.log.info(f"   ✓ Extreme {move_direction} ({move_atr:.1f}x ATR) but signal is {signal_side_lower.upper()} - OK")
+                    else:
+                        self.log.debug(f"   ✓ No extreme move detected ({move_atr:.1f}x ATR < {EXTREME_MOVE_ATR_MULT}x threshold)")
+
+            except Exception as e:
+                self.log.warning(f"⚠️ Extreme move check failed for {symbol}: {e} (proceeding anyway)")
+
         # ============================================================
         # TREND LEG FILTER (Zeiierman Strategy)
         # ============================================================
         # Analyze price action to skip late-trend entries (Leg 4-5)
         if LEG_FILTER_ENABLED and MAX_ALLOWED_LEG > 0:
             try:
-                # Get timeframe from signal (H1, M15, etc.)
-                timeframe = sig.get("timeframe", "H1")
-                interval = timeframe_to_interval(timeframe)
-
-                # Fetch klines for trend analysis
-                self.log.info(f"📊 Analyzing trend for {symbol} ({timeframe})...")
-                candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
+                # Fetch klines for trend analysis (reuse if already fetched)
+                if candles is None:
+                    self.log.info(f"📊 Analyzing trend for {symbol} ({timeframe})...")
+                    candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
+                else:
+                    self.log.info(f"📊 Analyzing trend for {symbol} ({timeframe})...")
 
                 if candles and len(candles) >= 50:
                     # Analyze trend and get recommendation (with ATR-based significance filtering)
