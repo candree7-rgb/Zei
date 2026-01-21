@@ -206,10 +206,16 @@ EXTREME_MOVE_FILTER_ENABLED = _get_bool("EXTREME_MOVE_FILTER_ENABLED", "true")
 # Block if recent candle move > X * ATR (3.0 = 3x normal volatility)
 # Higher = less sensitive (only extreme crashes)
 # Lower = more sensitive (blocks more)
+# Note: Normal pullbacks are 1-2x ATR, crashes are 4-8x ATR
 EXTREME_MOVE_ATR_MULT = _get_float("EXTREME_MOVE_ATR_MULT", "3.0")
 
-# Number of recent candles to check for extreme move
-EXTREME_MOVE_CANDLES = _get_int("EXTREME_MOVE_CANDLES", "2")
+# Number of recent candles to check - AUTO-SCALED by timeframe
+# We always check ~2 hours of data regardless of timeframe:
+# M15=8 candles, H1=2 candles, H4=1 candle
+# This ensures crashes are detected equally on all timeframes
+EXTREME_MOVE_CANDLES_M15 = _get_int("EXTREME_MOVE_CANDLES_M15", "8")
+EXTREME_MOVE_CANDLES_H1 = _get_int("EXTREME_MOVE_CANDLES_H1", "2")
+EXTREME_MOVE_CANDLES_H4 = _get_int("EXTREME_MOVE_CANDLES_H4", "1")
 
 # ============================================================
 # SIGNAL BATCHING (Multiple signals at same time)

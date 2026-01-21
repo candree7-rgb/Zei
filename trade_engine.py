@@ -20,7 +20,8 @@ from config import (
     HTF_ALIGNMENT_ENABLED, REQUIRE_PULLBACK_ENTRY,
     MIN_SWING_ATR, MIN_REVERSAL_ATR,
     DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
-    EXTREME_MOVE_FILTER_ENABLED, EXTREME_MOVE_ATR_MULT, EXTREME_MOVE_CANDLES,
+    EXTREME_MOVE_FILTER_ENABLED, EXTREME_MOVE_ATR_MULT,
+    EXTREME_MOVE_CANDLES_M15, EXTREME_MOVE_CANDLES_H1, EXTREME_MOVE_CANDLES_H4,
     get_entry_expiration
 )
 
@@ -499,11 +500,20 @@ class TradeEngine:
                 if candles is None:
                     candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
 
+                # Get timeframe-specific candle count (always ~2h of data)
+                tf_upper = timeframe.upper()
+                if tf_upper == "M15":
+                    extreme_candles = EXTREME_MOVE_CANDLES_M15
+                elif tf_upper == "H4":
+                    extreme_candles = EXTREME_MOVE_CANDLES_H4
+                else:  # H1 and others
+                    extreme_candles = EXTREME_MOVE_CANDLES_H1
+
                 if candles and len(candles) >= 20:
                     is_extreme, move_direction, move_atr = detect_extreme_move(
                         candles=candles,
                         atr_multiplier=EXTREME_MOVE_ATR_MULT,
-                        num_candles=EXTREME_MOVE_CANDLES,
+                        num_candles=extreme_candles,
                         log=self.log
                     )
 
