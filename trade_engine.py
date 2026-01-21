@@ -20,11 +20,15 @@ from config import (
     HTF_ALIGNMENT_ENABLED, REQUIRE_PULLBACK_ENTRY,
     MIN_SWING_ATR, MIN_REVERSAL_ATR,
     DYNAMIC_SIZING_ENABLED, RISK_PER_TRADE_PCT, MAX_LEVERAGE, MIN_LEVERAGE,
+    EXTREME_MOVE_FILTER_ENABLED, EXTREME_MOVE_ATR_MULT,
+    EXTREME_MOVE_CANDLES_M15, EXTREME_MOVE_CANDLES_H1, EXTREME_MOVE_CANDLES_H4,
     get_entry_expiration
 )
 
-# Trend analysis for leg filtering and HTF alignment
-from trend_analysis import analyze_trend, timeframe_to_interval, check_htf_alignment
+# Trend analysis for leg filtering, HTF alignment, and extreme move detection
+from trend_analysis import (
+    analyze_trend, timeframe_to_interval, check_htf_alignment, detect_extreme_move
+)
 
 def _opposite_side(side: str) -> str:
     return "Sell" if side == "Buy" else "Buy"
@@ -481,19 +485,67 @@ class TradeEngine:
                 else:
                     self.log.debug(f"R:R TP1 OK: {rr_tp1:.2f}:1 >= {MIN_RR_TP1}:1")
 
+        # Get timeframe from signal (H1, M15, etc.) - used by multiple filters
+        timeframe = sig.get("timeframe", "H1")
+        interval = timeframe_to_interval(timeframe)
+        candles = None  # Will be fetched if needed
+
+        # ============================================================
+        # EXTREME MOVE FILTER (Flash Crash / Pump Protection)
+        # ============================================================
+        # Skip trades after extreme price moves (catches falling knives)
+        if EXTREME_MOVE_FILTER_ENABLED:
+            try:
+                # Fetch candles if not already fetched
+                if candles is None:
+                    candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
+
+                # Get timeframe-specific candle count (always ~2h of data)
+                tf_upper = timeframe.upper()
+                if tf_upper == "M15":
+                    extreme_candles = EXTREME_MOVE_CANDLES_M15
+                elif tf_upper == "H4":
+                    extreme_candles = EXTREME_MOVE_CANDLES_H4
+                else:  # H1 and others
+                    extreme_candles = EXTREME_MOVE_CANDLES_H1
+
+                if candles and len(candles) >= 20:
+                    is_extreme, move_direction, move_atr = detect_extreme_move(
+                        candles=candles,
+                        atr_multiplier=EXTREME_MOVE_ATR_MULT,
+                        num_candles=extreme_candles,
+                        log=self.log
+                    )
+
+                    if is_extreme:
+                        signal_side_lower = sig["side"].lower()
+                        # Block LONG after crash, block SHORT after pump
+                        if move_direction == "drop" and signal_side_lower == "buy":
+                            self.log.info(f"⏭️  SKIP {symbol} – Extreme drop detected ({move_atr:.1f}x ATR) - don't catch falling knife")
+                            return None
+                        elif move_direction == "pump" and signal_side_lower == "sell":
+                            self.log.info(f"⏭️  SKIP {symbol} – Extreme pump detected ({move_atr:.1f}x ATR) - don't short the rocket")
+                            return None
+                        else:
+                            self.log.info(f"   ✓ Extreme {move_direction} ({move_atr:.1f}x ATR) but signal is {signal_side_lower.upper()} - OK")
+                    else:
+                        self.log.debug(f"   ✓ No extreme move detected ({move_atr:.1f}x ATR < {EXTREME_MOVE_ATR_MULT}x threshold)")
+
+            except Exception as e:
+                self.log.warning(f"⚠️ Extreme move check failed for {symbol}: {e} (proceeding anyway)")
+
         # ============================================================
         # TREND LEG FILTER (Zeiierman Strategy)
         # ============================================================
         # Analyze price action to skip late-trend entries (Leg 4-5)
         if LEG_FILTER_ENABLED and MAX_ALLOWED_LEG > 0:
             try:
-                # Get timeframe from signal (H1, M15, etc.)
-                timeframe = sig.get("timeframe", "H1")
-                interval = timeframe_to_interval(timeframe)
-
-                # Fetch klines for trend analysis
-                self.log.info(f"📊 Analyzing trend for {symbol} ({timeframe})...")
-                candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
+                # Fetch klines for trend analysis (reuse if already fetched)
+                if candles is None:
+                    self.log.info(f"📊 Analyzing trend for {symbol} ({timeframe})...")
+                    candles = self.bybit.klines(CATEGORY, symbol, interval, TREND_CANDLES)
+                else:
+                    self.log.info(f"📊 Analyzing trend for {symbol} ({timeframe})...")
 
                 if candles and len(candles) >= 50:
                     # Analyze trend and get recommendation (with ATR-based significance filtering)
@@ -764,15 +816,30 @@ class TradeEngine:
         tp_orders = []
         dca_orders = []
 
-        # Build TP orders
+        # Build TP orders with cumulative qty validation
         tp_to_place = min(len(tp_prices), len(splits))
         self.log.info(f"📊 Placing {tp_to_place} TPs (splits: {splits[:tp_to_place]}, remaining {100-sum(splits[:tp_to_place]):.0f}% runner)")
+        cumulative_tp_qty = 0.0
         for idx in range(tp_to_place):
             pct = float(splits[idx])
             if pct <= 0:
                 continue
             tp = self._round_price(float(tp_prices[idx]), tick_size)
-            qty = self._round_qty(size * (pct / 100.0), qty_step, min_qty)
+            raw_qty = size * (pct / 100.0)
+            qty = self._round_qty(raw_qty, qty_step, min_qty)
+
+            # Check if this TP would exceed remaining position
+            remaining_position = size - cumulative_tp_qty
+            if qty > remaining_position:
+                # Use remaining position instead if it's >= min_qty
+                if remaining_position >= min_qty:
+                    qty = self._round_qty(remaining_position, qty_step, min_qty)
+                    self.log.info(f"📊 TP{idx+1}: Adjusted qty to remaining position {qty:.8f}")
+                else:
+                    self.log.warning(f"⚠️ TP{idx+1} skipped: qty {qty:.8f} > remaining {remaining_position:.8f} (min_qty={min_qty})")
+                    continue
+
+            cumulative_tp_qty += qty
             tp_orders.append({
                 "idx": idx,
                 "body": {
@@ -788,6 +855,9 @@ class TradeEngine:
                     "orderLinkId": f"{trade['id']}:TP{idx+1}",
                 }
             })
+
+        if cumulative_tp_qty < size:
+            self.log.debug(f"📊 TP coverage: {cumulative_tp_qty:.8f}/{size:.8f} ({cumulative_tp_qty/size*100:.1f}%)")
 
         # Build DCA orders (dca_prices already loaded above for SL calculation)
         dca_to_place = min(len(dca_prices), len(DCA_QTY_MULTS))
@@ -842,8 +912,16 @@ class TradeEngine:
 
             def place_order(order_tuple):
                 order_type, o = order_tuple
-                resp = self.bybit.place_order(o["body"])
-                return order_type, o["idx"], (resp.get("result") or {}).get("orderId")
+                idx = o["idx"]
+                try:
+                    resp = self.bybit.place_order(o["body"])
+                    ret_code = resp.get("retCode", -1)
+                    if ret_code != 0:
+                        ret_msg = resp.get("retMsg", "Unknown error")
+                        raise Exception(f"{order_type}{idx+1 if order_type=='TP' else idx}: API error {ret_code} - {ret_msg}")
+                    return order_type, idx, (resp.get("result") or {}).get("orderId")
+                except Exception as e:
+                    raise Exception(f"{order_type}{idx+1 if order_type=='TP' else idx} failed: {e}")
 
             def set_sl():
                 self.bybit.set_trading_stop(ts_body)
@@ -871,11 +949,12 @@ class TradeEngine:
                             trade.setdefault("tp_order_ids", {})[str(idx+1)] = oid
                             if idx == 0:
                                 trade["tp1_order_id"] = oid
+                            self.log.info(f"✅ TP{idx+1} placed for {symbol} (id={oid})")
                         elif order_type == "DCA":
                             trade.setdefault("dca_order_ids", {})[str(idx)] = oid
                             self.log.info(f"✅ DCA{idx} placed for {symbol}")
                     except Exception as e:
-                        self.log.warning(f"Order placement failed: {e}")
+                        self.log.warning(f"⚠️ Order placement failed: {e}")
 
         trade["post_orders_placed"] = True
 

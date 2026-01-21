@@ -64,6 +64,70 @@ def calculate_atr(candles: List[Dict[str, Any]], period: int = 14) -> float:
     return sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
 
 
+def detect_extreme_move(
+    candles: List[Dict[str, Any]],
+    atr_multiplier: float = 3.0,
+    num_candles: int = 2,
+    log: Optional[logging.Logger] = None
+) -> Tuple[bool, str, float]:
+    """
+    Detect if there was an extreme price move in recent candles.
+
+    Uses ATR to adapt to each coin's normal volatility:
+    - BTC with low ATR: triggers at smaller % moves
+    - Altcoins with high ATR: allows larger % moves
+
+    Args:
+        candles: List of candles (newest first from Bybit API)
+        atr_multiplier: Block if move > atr_multiplier * ATR (default 3.0)
+        num_candles: Number of recent candles to check (default 2)
+        log: Optional logger
+
+    Returns:
+        (is_extreme: bool, direction: "drop"/"pump"/"none", move_in_atr: float)
+    """
+    if not candles or len(candles) < num_candles + 14:
+        return False, "none", 0.0
+
+    # Calculate ATR (uses more candles for stable average)
+    atr = calculate_atr(candles, period=14)
+    if atr <= 0:
+        return False, "none", 0.0
+
+    # Get recent candles (newest first, so index 0 is most recent)
+    recent = candles[:num_candles]
+
+    # Calculate total move in recent candles
+    # From oldest of recent to newest (close to close)
+    oldest_close = recent[-1]["open"]  # Open of oldest recent candle
+    newest_close = recent[0]["close"]  # Close of newest candle
+
+    move = newest_close - oldest_close
+    move_abs = abs(move)
+    move_in_atr = move_abs / atr if atr > 0 else 0
+
+    # Also check the range (high to low) of recent candles for flash crashes
+    highest = max(c["high"] for c in recent)
+    lowest = min(c["low"] for c in recent)
+    range_move = highest - lowest
+    range_in_atr = range_move / atr if atr > 0 else 0
+
+    # Use the larger of close-to-close move or high-low range
+    effective_move_atr = max(move_in_atr, range_in_atr)
+
+    if log:
+        move_pct = (move / oldest_close * 100) if oldest_close > 0 else 0
+        log.debug(f"Extreme move check: move={move_pct:.2f}%, ATR={atr:.4f}, "
+                  f"move_in_ATR={move_in_atr:.1f}x, range_in_ATR={range_in_atr:.1f}x")
+
+    # Check if extreme
+    if effective_move_atr >= atr_multiplier:
+        direction = "drop" if move < 0 or (newest_close < (highest + lowest) / 2) else "pump"
+        return True, direction, effective_move_atr
+
+    return False, "none", effective_move_atr
+
+
 @dataclass
 class SwingPoint:
     """Represents a swing high or low point."""
