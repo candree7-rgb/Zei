@@ -1,700 +1,322 @@
 // This Pine Script™ is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// © Zei Trading Bot - Full Strategy Replication with Signal Generation
+// © Zei Trading Bot - Fixed Strategy with Working Entries
 
 //@version=6
-strategy("Zei Pullback Strategy",
+strategy("Zei Pullback Strategy v2",
      overlay=true,
      initial_capital=10000,
-     default_qty_type=strategy.cash,
-     default_qty_value=1000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
      commission_type=strategy.commission.percent,
      commission_value=0.06,
      slippage=1,
      pyramiding=0,
      calc_on_every_tick=false,
-     process_orders_on_close=false,
-     max_labels_count=50,
-     max_lines_count=50)
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ ZEIIERMAN STRATEGY CONCEPT ░░░
-// ══════════════════════════════════════════════════════════════════════════════
-//
-// CORE IDEA: Trade pullbacks in established trends
-//
-// UPTREND (HH/HL structure):
-//   Leg 1 = First HH (impulse up)
-//   Leg 2 = First HL (pullback) ← BEST ENTRY ZONE
-//   Leg 3 = Second HH (continuation - often strongest)
-//   Leg 4 = Second HL (pullback) ← Still good, higher risk
-//   Leg 5 = Third HH (late/last flush) ← AVOID
-//
-// DOWNTREND (LH/LL structure):
-//   Leg 1 = First LL (impulse down)
-//   Leg 2 = First LH (pullback) ← BEST ENTRY ZONE
-//   Leg 3 = Second LL (continuation)
-//   Leg 4 = Second LH (pullback) ← Still good, higher risk
-//   Leg 5 = Third LL (late/last flush) ← AVOID
-//
-// SIGNAL TRIGGER: Price pulls back to support/resistance zone and shows
-//                 resumption (reclaim, strong close, momentum kick)
-//
-// ══════════════════════════════════════════════════════════════════════════════
-
+     process_orders_on_close=true,
+     max_labels_count=500,
+     max_lines_count=500,
+     max_boxes_count=500)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ░░░ INPUTS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// --- Swing Detection Settings ---
+// --- Swing Detection ---
 grp_swing = "🔄 Swing Detection"
-swingLookback = input.int(5, "Swing Lookback", minval=2, maxval=20, group=grp_swing, tooltip="Kerzen links/rechts für Swing-Erkennung")
-minSwingAtrMult = input.float(0.5, "Min Swing Size (ATR Mult)", minval=0.1, maxval=3.0, step=0.1, group=grp_swing, tooltip="Swing muss > X*ATR sein um als signifikant zu gelten")
+swingLen = input.int(5, "Swing Lookback", minval=2, maxval=20, group=grp_swing)
 
-// --- Trend Leg Filter ---
-grp_leg = "🦵 Trend Leg Filter"
-legFilterEnabled = input.bool(true, "Leg Filter aktivieren", group=grp_leg)
-maxAllowedLeg = input.int(4, "Max erlaubte Leg", minval=1, maxval=10, group=grp_leg, tooltip="Leg 5+ wird übersprungen (späte Trends)")
-requireEarlyLeg = input.bool(false, "Nur frühe Legs (1-3)", group=grp_leg, tooltip="Höchste Qualität, weniger Trades")
+// --- Entry Settings ---
+grp_entry = "📊 Entry Settings"
+fibTop = input.float(0.5, "Fib Zone Top", minval=0.1, maxval=0.9, step=0.05, group=grp_entry, tooltip="Entry zone starts here (retracement from swing)")
+fibBtm = input.float(0.786, "Fib Zone Bottom", minval=0.2, maxval=1.0, step=0.05, group=grp_entry, tooltip="Entry zone ends here")
+requireConfirmation = input.bool(true, "Require Candle Confirmation", group=grp_entry)
 
-// --- Pullback Entry Settings ---
-grp_entry = "📊 Pullback Entry"
-pullbackDepthMin = input.float(0.382, "Min Pullback Tiefe (Fib)", minval=0.1, maxval=0.9, step=0.05, group=grp_entry, tooltip="Mindest-Retracement für gültigen Pullback")
-pullbackDepthMax = input.float(0.786, "Max Pullback Tiefe (Fib)", minval=0.2, maxval=1.0, step=0.05, group=grp_entry, tooltip="Maximales Retracement (darüber = Trendbruch)")
-requireMomentumKick = input.bool(true, "Momentum-Bestätigung", group=grp_entry, tooltip="Warte auf bullish/bearish Candle als Bestätigung")
-
-// --- HTF Alignment Filter ---
-grp_htf = "📈 HTF Alignment Filter"
-htfEnabled = input.bool(true, "HTF Filter aktivieren", group=grp_htf)
-htfTimeframe = input.timeframe("240", "Higher Timeframe", group=grp_htf, tooltip="H4 für M15/H1, D für H4")
-
-// --- Extreme Move Filter ---
-grp_extreme = "⚡ Extreme Move Filter"
-extremeMoveEnabled = input.bool(false, "Extreme Move Filter aktivieren", group=grp_extreme, tooltip="Aktuell disabled im Bot")
-extremeMoveAtrMult = input.float(3.0, "ATR Multiplikator", minval=1.5, maxval=10.0, step=0.5, group=grp_extreme)
-extremeMoveCandles = input.int(8, "Lookback Kerzen", minval=1, maxval=50, group=grp_extreme)
+// --- Trend Filter ---
+grp_trend = "📈 Trend Filter"
+useTrendFilter = input.bool(true, "Use EMA Trend Filter", group=grp_trend)
+trendEmaLen = input.int(50, "Trend EMA Length", group=grp_trend)
 
 // --- Risk Management ---
 grp_risk = "💰 Risk Management"
-riskPerTrade = input.float(2.0, "Risk pro Trade %", minval=0.5, maxval=10.0, step=0.5, group=grp_risk)
-minRrTp1 = input.float(0.5, "Min R:R für TP1", minval=0.1, maxval=3.0, step=0.1, group=grp_risk)
+riskPct = input.float(2.0, "Risk %", minval=0.5, maxval=10.0, step=0.5, group=grp_risk)
+slBuffer = input.float(0.5, "SL Buffer %", minval=0.0, maxval=3.0, step=0.1, group=grp_risk)
+tp1Mult = input.float(1.5, "TP1 (R:R)", minval=0.5, maxval=5.0, step=0.1, group=grp_risk)
+tp2Mult = input.float(2.5, "TP2 (R:R)", minval=1.0, maxval=10.0, step=0.1, group=grp_risk)
+tp1Pct = input.int(50, "TP1 Close %", minval=10, maxval=90, group=grp_risk)
 
-// --- Stop Loss Settings ---
-grp_sl = "🛑 Stop Loss"
-slBufferAtr = input.float(0.3, "SL Buffer (ATR Mult)", minval=0.0, maxval=2.0, step=0.1, group=grp_sl, tooltip="Buffer unter Swing Low / über Swing High in ATR")
-slBufferPct = input.float(0.3, "SL Buffer %", minval=0.0, maxval=2.0, step=0.1, group=grp_sl, tooltip="Alternativer %-Buffer")
-useAtrBuffer = input.bool(true, "ATR-basierten Buffer verwenden", group=grp_sl)
-
-// --- Take Profit Settings (R:R Based like Discord Signals) ---
-grp_tp = "🎯 Take Profit"
-tp1RR = input.float(1.5, "TP1 R:R Ratio", minval=0.5, maxval=5.0, step=0.1, group=grp_tp, tooltip="TP1 = Entry + (SL-Distanz × R:R)")
-tp2RR = input.float(2.5, "TP2 R:R Ratio", minval=1.0, maxval=10.0, step=0.1, group=grp_tp, tooltip="TP2 = Entry + (SL-Distanz × R:R)")
-tp1Split = input.int(50, "TP1 Split %", minval=10, maxval=90, group=grp_tp)
-
-// --- Breakeven Settings ---
-grp_be = "🔄 Breakeven"
-moveSlToBeOnTp1 = input.bool(true, "SL auf BE nach TP1", group=grp_be)
-beBufferPct = input.float(0.15, "BE Buffer %", minval=0.0, maxval=1.0, step=0.05, group=grp_be)
-
-// --- Visual Settings ---
-grp_vis = "👁 Visualisierung"
-showSwings = input.bool(true, "Swing Punkte zeigen", group=grp_vis)
-showLegLabels = input.bool(true, "Leg Labels zeigen", group=grp_vis)
-showPullbackZone = input.bool(true, "Pullback Zone zeigen", group=grp_vis)
-showFilteredSignals = input.bool(true, "Gefilterte Signale zeigen (grau)", group=grp_vis)
-
+// --- Visuals ---
+grp_vis = "👁 Visuals"
+showZones = input.bool(true, "Show Entry Zones", group=grp_vis)
+showSwings = input.bool(true, "Show Swing Points", group=grp_vis)
+zoneExtend = input.int(20, "Zone Extend Bars", minval=5, maxval=100, group=grp_vis)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ CORE INDICATORS ░░░
+// ░░░ INDICATORS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-atrPeriod = 14
-atr = ta.atr(atrPeriod)
+atr = ta.atr(14)
+trendEma = ta.ema(close, trendEmaLen)
 
-// EMAs für Trend-Richtung
-ema20 = ta.ema(close, 20)
-ema50 = ta.ema(close, 50)
-ema200 = ta.ema(close, 200)
-
+// Trend Direction (simple)
+isBullTrend = close > trendEma
+isBearTrend = close < trendEma
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ SWING HIGH/LOW DETECTION ░░░
+// ░░░ SWING DETECTION (Using ta.pivothigh/pivotlow) ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Funktion: Ist dies ein Swing High?
-isSwingHigh(idx, lookback) =>
-    result = true
-    for i = 1 to lookback
-        if high[idx - i] >= high[idx] or high[idx + i] >= high[idx]
-            result := false
-            break
-    result
+// Detect pivots
+swingHigh = ta.pivothigh(high, swingLen, swingLen)
+swingLow = ta.pivotlow(low, swingLen, swingLen)
 
-// Funktion: Ist dies ein Swing Low?
-isSwingLow(idx, lookback) =>
-    result = true
-    for i = 1 to lookback
-        if low[idx - i] <= low[idx] or low[idx + i] <= low[idx]
-            result := false
-            break
-    result
-
-// Bestätigte Swings (mit Verzögerung)
-swingHighConfirmed = isSwingHigh(swingLookback, swingLookback)
-swingLowConfirmed = isSwingLow(swingLookback, swingLookback)
-
-// Swing-Werte speichern
-var float[] swingHighPrices = array.new_float(0)
-var float[] swingLowPrices = array.new_float(0)
-var int[] swingHighBars = array.new_int(0)
-var int[] swingLowBars = array.new_int(0)
-
-// Neue Swing Highs hinzufügen (nur signifikante)
-if swingHighConfirmed
-    swingPrice = high[swingLookback]
-    // Prüfe ob signifikant (> minSwingAtrMult * ATR)
-    if array.size(swingLowPrices) > 0
-        lastLow = array.get(swingLowPrices, array.size(swingLowPrices) - 1)
-        swingSize = math.abs(swingPrice - lastLow)
-        if swingSize > minSwingAtrMult * atr[swingLookback]
-            array.push(swingHighPrices, swingPrice)
-            array.push(swingHighBars, bar_index - swingLookback)
-    else
-        array.push(swingHighPrices, swingPrice)
-        array.push(swingHighBars, bar_index - swingLookback)
-
-// Neue Swing Lows hinzufügen (nur signifikante)
-if swingLowConfirmed
-    swingPrice = low[swingLookback]
-    if array.size(swingHighPrices) > 0
-        lastHigh = array.get(swingHighPrices, array.size(swingHighPrices) - 1)
-        swingSize = math.abs(lastHigh - swingPrice)
-        if swingSize > minSwingAtrMult * atr[swingLookback]
-            array.push(swingLowPrices, swingPrice)
-            array.push(swingLowBars, bar_index - swingLookback)
-    else
-        array.push(swingLowPrices, swingPrice)
-        array.push(swingLowBars, bar_index - swingLookback)
-
-// Begrenze Array-Größe (behalte nur letzte 20 Swings)
-if array.size(swingHighPrices) > 20
-    array.shift(swingHighPrices)
-    array.shift(swingHighBars)
-if array.size(swingLowPrices) > 20
-    array.shift(swingLowPrices)
-    array.shift(swingLowBars)
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ TREND STRUCTURE & LEG COUNTING ░░░
-// ══════════════════════════════════════════════════════════════════════════════
-
-// Aktuelle Werte für Berechnungen
+// Track swing values
 var float lastSwingHigh = na
-var float prevSwingHigh = na
 var float lastSwingLow = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+var float prevSwingHigh = na
 var float prevSwingLow = na
 
-if array.size(swingHighPrices) >= 2
-    lastSwingHigh := array.get(swingHighPrices, array.size(swingHighPrices) - 1)
-    prevSwingHigh := array.get(swingHighPrices, array.size(swingHighPrices) - 2)
+// Update on new swing high
+if not na(swingHigh)
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := swingHigh
+    lastSwingHighBar := bar_index - swingLen
 
-if array.size(swingLowPrices) >= 2
-    lastSwingLow := array.get(swingLowPrices, array.size(swingLowPrices) - 1)
-    prevSwingLow := array.get(swingLowPrices, array.size(swingLowPrices) - 2)
+// Update on new swing low
+if not na(swingLow)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := swingLow
+    lastSwingLowBar := bar_index - swingLen
 
-// Trend-Struktur erkennen
-// Uptrend: HH (Higher Highs) + HL (Higher Lows)
-// Downtrend: LH (Lower Highs) + LL (Lower Lows)
-
-isHigherHigh = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh > prevSwingHigh
-isHigherLow = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow > prevSwingLow
-isLowerHigh = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh < prevSwingHigh
-isLowerLow = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow < prevSwingLow
-
-// Trend bestimmen
-var string trendDirection = "neutral"
-var int legCount = 0
-var bool inPullback = false
-
-// Uptrend: Braucht HH + HL Struktur
-isUptrend = isHigherHigh and isHigherLow
-// Downtrend: Braucht LH + LL Struktur
-isDowntrend = isLowerHigh and isLowerLow
-
-if isUptrend
-    trendDirection := "uptrend"
-else if isDowntrend
-    trendDirection := "downtrend"
-else
-    trendDirection := "neutral"
-
-// Leg Counting basierend auf Swing-Sequenz
-// Uptrend: Jeder neue HH = +1 Leg, Jeder HL = Pullback
-// Downtrend: Jeder neue LL = +1 Leg, Jeder LH = Pullback
-
-countLegs() =>
-    legs = 0
-    pullback = false
-
-    if trendDirection == "uptrend" and array.size(swingHighPrices) >= 3
-        // Zähle aufeinanderfolgende Higher Highs
-        for i = array.size(swingHighPrices) - 1 to 1
-            currentHH = array.get(swingHighPrices, i)
-            prevHH = array.get(swingHighPrices, i - 1)
-            if currentHH > prevHH
-                legs += 1
-            else
-                break
-        // Prüfe ob wir gerade im Pullback sind (Preis unter letztem High)
-        if not na(lastSwingHigh) and close < lastSwingHigh
-            pullback := true
-
-    else if trendDirection == "downtrend" and array.size(swingLowPrices) >= 3
-        // Zähle aufeinanderfolgende Lower Lows
-        for i = array.size(swingLowPrices) - 1 to 1
-            currentLL = array.get(swingLowPrices, i)
-            prevLL = array.get(swingLowPrices, i - 1)
-            if currentLL < prevLL
-                legs += 1
-            else
-                break
-        // Prüfe ob wir gerade im Pullback sind (Preis über letztem Low)
-        if not na(lastSwingLow) and close > lastSwingLow
-            pullback := true
-
-    [math.max(1, legs), pullback]
-
-[calculatedLegs, calculatedPullback] = countLegs()
-legCount := calculatedLegs
-inPullback := calculatedPullback
-
+// Plot swing points
+plotshape(showSwings and not na(swingHigh), "Swing High", shape.triangledown, location.abovebar, color.new(color.red, 20), offset=-swingLen, size=size.tiny)
+plotshape(showSwings and not na(swingLow), "Swing Low", shape.triangleup, location.belowbar, color.new(color.green, 20), offset=-swingLen, size=size.tiny)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ PULLBACK ZONE CALCULATION ░░░
+// ░░░ STRUCTURE DETECTION ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Pullback Zone für LONG: Zwischen letztem Swing High und Swing Low
-// Entry Zone: 38.2% - 78.6% Retracement
+// Higher High / Higher Low (Bullish Structure)
+isHH = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh > prevSwingHigh
+isHL = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow > prevSwingLow
 
-var float pullbackZoneTop = na
-var float pullbackZoneBtm = na
-var float pullbackLegHigh = na
-var float pullbackLegLow = na
+// Lower High / Lower Low (Bearish Structure)
+isLH = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh < prevSwingHigh
+isLL = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow < prevSwingLow
 
-if trendDirection == "uptrend" and not na(lastSwingHigh) and not na(lastSwingLow)
-    pullbackLegHigh := lastSwingHigh
-    pullbackLegLow := lastSwingLow
-    legRange = pullbackLegHigh - pullbackLegLow
-    // Pullback Zone (Fib Retracement vom High)
-    pullbackZoneTop := pullbackLegHigh - legRange * pullbackDepthMin
-    pullbackZoneBtm := pullbackLegHigh - legRange * pullbackDepthMax
-
-else if trendDirection == "downtrend" and not na(lastSwingHigh) and not na(lastSwingLow)
-    pullbackLegHigh := lastSwingHigh
-    pullbackLegLow := lastSwingLow
-    legRange = pullbackLegHigh - pullbackLegLow
-    // Pullback Zone (Fib Retracement vom Low)
-    pullbackZoneBtm := pullbackLegLow + legRange * pullbackDepthMin
-    pullbackZoneTop := pullbackLegLow + legRange * pullbackDepthMax
-
+// Trend based on structure (more relaxed - only need one condition)
+bullishStructure = isHH or isHL
+bearishStructure = isLH or isLL
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ SIGNAL GENERATION - PULLBACK ENTRY ░░░
+// ░░░ ENTRY ZONES (Fixed Boxes) ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// LONG Signal:
-// 1. Uptrend (HH/HL structure)
-// 2. Preis ist in der Pullback Zone (38.2% - 78.6% Retracement)
-// 3. Momentum Bestätigung: Bullish Candle (close > open) oder Reclaim über Zone
+var box longZoneBox = na
+var box shortZoneBox = na
+var float longZoneTop = na
+var float longZoneBtm = na
+var float shortZoneTop = na
+var float shortZoneBtm = na
+var int longZoneBar = na
+var int shortZoneBar = na
 
-priceInLongPullbackZone = not na(pullbackZoneBtm) and not na(pullbackZoneTop) and
-                          trendDirection == "uptrend" and
-                          low <= pullbackZoneTop and close >= pullbackZoneBtm
+// Create LONG zone after swing low (for buying the pullback)
+if not na(swingLow) and not na(lastSwingHigh)
+    // Zone from recent high to low, fib retracement area
+    zoneRange = lastSwingHigh - swingLow
+    longZoneTop := swingLow + zoneRange * (1 - fibTop)  // Higher fib = lower price for long
+    longZoneBtm := swingLow + zoneRange * (1 - fibBtm)
+    longZoneBar := bar_index - swingLen
 
-bullishMomentum = close > open and close > ema20
-bullishReclaim = close > pullbackZoneTop and close[1] <= pullbackZoneTop
+    // Delete old box
+    if not na(longZoneBox)
+        box.delete(longZoneBox)
 
-longMomentumConfirmed = not requireMomentumKick or bullishMomentum or bullishReclaim
+    // Create new fixed box
+    if showZones
+        longZoneBox := box.new(longZoneBar, longZoneTop, longZoneBar + zoneExtend, longZoneBtm,
+             border_color=color.new(color.green, 50), bgcolor=color.new(color.green, 85),
+             border_width=1, border_style=line.style_dashed)
 
-// SHORT Signal:
-// 1. Downtrend (LH/LL structure)
-// 2. Preis ist in der Pullback Zone
-// 3. Momentum Bestätigung: Bearish Candle oder Rejection
+// Create SHORT zone after swing high (for selling the pullback)
+if not na(swingHigh) and not na(lastSwingLow)
+    // Zone from recent low to high, fib retracement area
+    zoneRange = swingHigh - lastSwingLow
+    shortZoneBtm := swingHigh - zoneRange * (1 - fibTop)  // Higher fib = higher price for short
+    shortZoneTop := swingHigh - zoneRange * (1 - fibBtm)
+    shortZoneBar := bar_index - swingLen
 
-priceInShortPullbackZone = not na(pullbackZoneBtm) and not na(pullbackZoneTop) and
-                           trendDirection == "downtrend" and
-                           high >= pullbackZoneBtm and close <= pullbackZoneTop
+    // Delete old box
+    if not na(shortZoneBox)
+        box.delete(shortZoneBox)
 
-bearishMomentum = close < open and close < ema20
-bearishRejection = close < pullbackZoneBtm and close[1] >= pullbackZoneBtm
-
-shortMomentumConfirmed = not requireMomentumKick or bearishMomentum or bearishRejection
-
-// Raw Signals
-rawLongSignal = priceInLongPullbackZone and longMomentumConfirmed and inPullback
-rawShortSignal = priceInShortPullbackZone and shortMomentumConfirmed and inPullback
-
-// Verhindere mehrfache Signale hintereinander
-var int lastLongBar = 0
-var int lastShortBar = 0
-minBarsBetweenSignals = 5
-
-rawLongSignal := rawLongSignal and (bar_index - lastLongBar > minBarsBetweenSignals)
-rawShortSignal := rawShortSignal and (bar_index - lastShortBar > minBarsBetweenSignals)
-
-if rawLongSignal
-    lastLongBar := bar_index
-if rawShortSignal
-    lastShortBar := bar_index
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ HTF TREND ANALYSIS ░░░
-// ══════════════════════════════════════════════════════════════════════════════
-
-htfEma50 = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, 50))
-htfEma200 = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, 200))
-htfClose = request.security(syminfo.tickerid, htfTimeframe, close)
-
-htfTrend = htfEma50 > htfEma200 ? "uptrend" : htfEma50 < htfEma200 ? "downtrend" : "neutral"
-
+    // Create new fixed box
+    if showZones
+        shortZoneBox := box.new(shortZoneBar, shortZoneTop, shortZoneBar + zoneExtend, shortZoneBtm,
+             border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 85),
+             border_width=1, border_style=line.style_dashed)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ EXTREME MOVE DETECTION ░░░
+// ░░░ ENTRY SIGNALS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-recentMove = close - close[extremeMoveCandles]
-recentMoveAtr = recentMove / atr
+// Price in zone checks
+inLongZone = not na(longZoneTop) and not na(longZoneBtm) and low <= longZoneTop and close >= longZoneBtm
+inShortZone = not na(shortZoneTop) and not na(shortZoneBtm) and high >= shortZoneBtm and close <= shortZoneTop
 
-extremeBullMove = recentMoveAtr > extremeMoveAtrMult
-extremeBearMove = recentMoveAtr < -extremeMoveAtrMult
+// Candle confirmation
+bullishCandle = close > open
+bearishCandle = close < open
 
+// Trend filter
+trendAllowsLong = not useTrendFilter or isBullTrend
+trendAllowsShort = not useTrendFilter or isBearTrend
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ FILTER APPLICATION ░░░
-// ══════════════════════════════════════════════════════════════════════════════
+// Final signals
+longCondition = inLongZone and trendAllowsLong and (not requireConfirmation or bullishCandle)
+shortCondition = inShortZone and trendAllowsShort and (not requireConfirmation or bearishCandle)
 
-// --- Filter 1: Trend Leg Filter ---
-legFilterPassLong = not legFilterEnabled or (legCount <= maxAllowedLeg and (not requireEarlyLeg or legCount <= 3))
-legFilterPassShort = not legFilterEnabled or (legCount <= maxAllowedLeg and (not requireEarlyLeg or legCount <= 3))
-
-// --- Filter 2: HTF Alignment ---
-htfFilterPassLong = not htfEnabled or htfTrend == "uptrend" or htfTrend == "neutral"
-htfFilterPassShort = not htfEnabled or htfTrend == "downtrend" or htfTrend == "neutral"
-
-// --- Filter 3: Extreme Move Filter ---
-extremeFilterPassLong = not extremeMoveEnabled or not extremeBearMove
-extremeFilterPassShort = not extremeMoveEnabled or not extremeBullMove
-
-// --- Kombinierte Filter ---
-allFiltersPassLong = legFilterPassLong and htfFilterPassLong and extremeFilterPassLong
-allFiltersPassShort = legFilterPassShort and htfFilterPassShort and extremeFilterPassShort
-
+// Prevent multiple entries
+var int lastEntryBar = 0
+minBarsBetween = 3
+canEnter = bar_index - lastEntryBar > minBarsBetween
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ DYNAMIC SL/TP CALCULATION ░░░
+// ░░░ POSITION SIZING & RISK ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// SL für LONG: Unter dem letzten Swing Low + Buffer
-calcLongSl() =>
-    if na(lastSwingLow)
-        close * (1 - 0.03)  // 3% Fallback
-    else
-        buffer = useAtrBuffer ? slBufferAtr * atr : lastSwingLow * slBufferPct / 100
-        lastSwingLow - buffer
-
-// SL für SHORT: Über dem letzten Swing High + Buffer
-calcShortSl() =>
-    if na(lastSwingHigh)
-        close * (1 + 0.03)  // 3% Fallback
-    else
-        buffer = useAtrBuffer ? slBufferAtr * atr : lastSwingHigh * slBufferPct / 100
-        lastSwingHigh + buffer
-
-// TP basierend auf R:R (wie Discord Signale)
-calcLongTp1(entry, sl) =>
-    risk = entry - sl
-    entry + risk * tp1RR
-
-calcLongTp2(entry, sl) =>
-    risk = entry - sl
-    entry + risk * tp2RR
-
-calcShortTp1(entry, sl) =>
-    risk = sl - entry
-    entry - risk * tp1RR
-
-calcShortTp2(entry, sl) =>
-    risk = sl - entry
-    entry - risk * tp2RR
-
+calcQty(entryP, slP) =>
+    riskAmt = strategy.equity * riskPct / 100
+    slDist = math.abs(entryP - slP)
+    slDist > 0 ? riskAmt / slDist : 0
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ TRADE STATE MANAGEMENT ░░░
+// ░░░ TRADE MANAGEMENT ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
 var float entryPrice = na
-var float currentSl = na
-var float tp1Price = na
-var float tp2Price = na
+var float stopLoss = na
+var float takeProfit1 = na
+var float takeProfit2 = na
+var bool isLong = na
 var bool tp1Hit = false
-var bool isLong = false
 
+// --- LONG ENTRY ---
+if longCondition and canEnter and strategy.position_size == 0 and not na(lastSwingLow)
+    entryPrice := close
+    stopLoss := lastSwingLow * (1 - slBuffer / 100)
+    riskDist = entryPrice - stopLoss
+    takeProfit1 := entryPrice + riskDist * tp1Mult
+    takeProfit2 := entryPrice + riskDist * tp2Mult
+    isLong := true
+    tp1Hit := false
+    lastEntryBar := bar_index
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ DYNAMIC POSITION SIZING (2% Risk per Trade) ░░░
-// ══════════════════════════════════════════════════════════════════════════════
-//
-// Formel: Position Size = (Equity × Risk%) / SL_Distance_%
-//
-// Beispiel mit 2% Risiko:
-// - Equity: $10,000
-// - Risk Amount: $10,000 × 2% = $200
-// - Entry: $100, SL: $95 → SL_Distance = 5%
-// - Position Value: $200 / 5% = $4,000
-// - Qty: $4,000 / $100 = 40 Coins
-// - Wenn SL hit: 40 × ($100-$95) = $200 Verlust = exakt 2%
-//
-// ══════════════════════════════════════════════════════════════════════════════
+    qty = calcQty(entryPrice, stopLoss)
+    strategy.entry("Long", strategy.long, qty=qty)
 
-calcPositionSize(entry, sl) =>
-    slDistancePct = math.abs(entry - sl) / entry * 100
-    riskAmount = strategy.equity * riskPerTrade / 100
-    positionValue = slDistancePct > 0 ? riskAmount / (slDistancePct / 100) : 0
-    qty = positionValue / entry
-    qty
+// --- SHORT ENTRY ---
+if shortCondition and canEnter and strategy.position_size == 0 and not na(lastSwingHigh)
+    entryPrice := close
+    stopLoss := lastSwingHigh * (1 + slBuffer / 100)
+    riskDist = stopLoss - entryPrice
+    takeProfit1 := entryPrice - riskDist * tp1Mult
+    takeProfit2 := entryPrice - riskDist * tp2Mult
+    isLong := false
+    tp1Hit := false
+    lastEntryBar := bar_index
 
+    qty = calcQty(entryPrice, stopLoss)
+    strategy.entry("Short", strategy.short, qty=qty)
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ ENTRY LOGIC ░░░
-// ══════════════════════════════════════════════════════════════════════════════
+// --- EXIT MANAGEMENT ---
+if strategy.position_size > 0  // Long position
+    strategy.exit("TP1", "Long", qty_percent=tp1Pct, limit=takeProfit1, stop=stopLoss)
+    if high >= takeProfit1 and not tp1Hit
+        tp1Hit := true
+        stopLoss := entryPrice  // Move to breakeven
+    if tp1Hit
+        strategy.exit("TP2", "Long", qty_percent=100, limit=takeProfit2, stop=stopLoss)
 
-// --- LONG Entry ---
-if rawLongSignal and allFiltersPassLong and strategy.position_size == 0
-    proposedSl = calcLongSl()
-    proposedTp1 = calcLongTp1(close, proposedSl)
-    proposedTp2 = calcLongTp2(close, proposedSl)
+if strategy.position_size < 0  // Short position
+    strategy.exit("TP1", "Short", qty_percent=tp1Pct, limit=takeProfit1, stop=stopLoss)
+    if low <= takeProfit1 and not tp1Hit
+        tp1Hit := true
+        stopLoss := entryPrice  // Move to breakeven
+    if tp1Hit
+        strategy.exit("TP2", "Short", qty_percent=100, limit=takeProfit2, stop=stopLoss)
 
-    // R:R Check
-    risk = close - proposedSl
-    reward = proposedTp1 - close
-    rr = risk > 0 ? reward / risk : 0
-
-    if rr >= minRrTp1
-        entryPrice := close
-        currentSl := proposedSl
-        tp1Price := proposedTp1
-        tp2Price := proposedTp2
-        tp1Hit := false
-        isLong := true
-
-        // Dynamic Position Sizing: Berechne Qty für exakt 2% Risiko
-        posQty = calcPositionSize(close, proposedSl)
-
-        strategy.entry("Long", strategy.long, qty=posQty)
-        strategy.exit("TP1", "Long", qty_percent=tp1Split, limit=tp1Price, stop=currentSl)
-
-// --- SHORT Entry ---
-if rawShortSignal and allFiltersPassShort and strategy.position_size == 0
-    proposedSl = calcShortSl()
-    proposedTp1 = calcShortTp1(close, proposedSl)
-    proposedTp2 = calcShortTp2(close, proposedSl)
-
-    // R:R Check
-    risk = proposedSl - close
-    reward = close - proposedTp1
-    rr = risk > 0 ? reward / risk : 0
-
-    if rr >= minRrTp1
-        entryPrice := close
-        currentSl := proposedSl
-        tp1Price := proposedTp1
-        tp2Price := proposedTp2
-        tp1Hit := false
-        isLong := false
-
-        // Dynamic Position Sizing: Berechne Qty für exakt 2% Risiko
-        posQty = calcPositionSize(close, proposedSl)
-
-        strategy.entry("Short", strategy.short, qty=posQty)
-        strategy.exit("TP1", "Short", qty_percent=tp1Split, limit=tp1Price, stop=currentSl)
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ TP1 HIT → BREAKEVEN + TP2 ░░░
-// ══════════════════════════════════════════════════════════════════════════════
-
-tp1Reached = false
-if strategy.position_size != 0 and not tp1Hit
-    if isLong and high >= tp1Price
-        tp1Reached := true
-    if not isLong and low <= tp1Price
-        tp1Reached := true
-
-if tp1Reached and moveSlToBeOnTp1
-    tp1Hit := true
-
-    if isLong
-        currentSl := entryPrice * (1 + beBufferPct / 100)
-        strategy.exit("TP2", "Long", qty_percent=100, limit=tp2Price, stop=currentSl)
-    else
-        currentSl := entryPrice * (1 - beBufferPct / 100)
-        strategy.exit("TP2", "Short", qty_percent=100, limit=tp2Price, stop=currentSl)
-
-// Reset bei Position-Close (Preise - Linien werden separat oben gehandhabt)
+// Reset on position close
 if strategy.position_size == 0 and strategy.position_size[1] != 0
     entryPrice := na
-    currentSl := na
-    tp1Price := na
-    tp2Price := na
+    stopLoss := na
+    takeProfit1 := na
+    takeProfit2 := na
     tp1Hit := false
 
-
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ VISUALISIERUNG ░░░
-// ══════════════════════════════════════════════════════════════════════════════
-
-// Swing Punkte
-plotshape(showSwings and swingHighConfirmed, "Swing High", shape.triangledown, location.abovebar, color.new(color.red, 30), offset=-swingLookback, size=size.tiny)
-plotshape(showSwings and swingLowConfirmed, "Swing Low", shape.triangleup, location.belowbar, color.new(color.green, 30), offset=-swingLookback, size=size.tiny)
-
-// Pullback Zone
-pbZoneColor = trendDirection == "uptrend" ? color.new(color.green, 85) : trendDirection == "downtrend" ? color.new(color.red, 85) : na
-p1 = plot(showPullbackZone and not na(pullbackZoneTop) ? pullbackZoneTop : na, "PB Zone Top", color=na, display=display.none)
-p2 = plot(showPullbackZone and not na(pullbackZoneBtm) ? pullbackZoneBtm : na, "PB Zone Btm", color=na, display=display.none)
-fill(p1, p2, color=pbZoneColor, title="Pullback Zone")
-
-// Entry Signale - Gültige
-plotshape(rawLongSignal and allFiltersPassLong and strategy.position_size == 0, "Long Signal", shape.labelup, location.belowbar, color.new(color.green, 0), size=size.normal, text="BUY")
-plotshape(rawShortSignal and allFiltersPassShort and strategy.position_size == 0, "Short Signal", shape.labeldown, location.abovebar, color.new(color.red, 0), size=size.normal, text="SELL")
-
-// Entry Signale - Gefiltert (grau)
-plotshape(showFilteredSignals and rawLongSignal and not allFiltersPassLong, "Filtered Long", shape.labelup, location.belowbar, color.new(color.gray, 50), size=size.tiny, text="x")
-plotshape(showFilteredSignals and rawShortSignal and not allFiltersPassShort, "Filtered Short", shape.labeldown, location.abovebar, color.new(color.gray, 50), size=size.tiny, text="x")
-
-// SL/TP Linien während Position (nur wenn Position offen)
-inPosition = strategy.position_size != 0
-plot(inPosition ? currentSl : na, "Stop Loss", color.red, 2, plot.style_linebr)
-plot(inPosition ? entryPrice : na, "Entry", color.blue, 1, plot.style_linebr)
-plot(inPosition and not tp1Hit ? tp1Price : na, "TP1", color.green, 1, plot.style_linebr)
-plot(inPosition ? tp2Price : na, "TP2", color.lime, 2, plot.style_linebr)
-
-// EMAs
-plot(ema20, "EMA 20", color.new(color.yellow, 70), linewidth=1)
-plot(ema50, "EMA 50", color.new(color.orange, 70), linewidth=1)
-plot(ema200, "EMA 200", color.new(color.blue, 70), linewidth=2)
-
-// HTF Trend Background
-bgcolor(htfEnabled and htfTrend == "uptrend" ? color.new(color.green, 95) : htfEnabled and htfTrend == "downtrend" ? color.new(color.red, 95) : na)
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ░░░ LEG LABELS ░░░
+// ░░░ VISUALIZATION ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Leg Count Labels an Swing Points - verwende yloc.abovebar/belowbar für stabile Position
-if showLegLabels and swingHighConfirmed and trendDirection == "uptrend"
-    labelText = "Leg " + str.tostring(legCount)
-    labelColor = legCount <= 3 ? color.green : legCount == 4 ? color.orange : color.red
-    label.new(bar_index - swingLookback, na, labelText,
-         xloc=xloc.bar_index, yloc=yloc.abovebar,
-         style=label.style_label_down, color=labelColor, textcolor=color.white, size=size.small)
+// Entry signals
+plotshape(longCondition and canEnter and strategy.position_size == 0, "Buy Signal", shape.labelup, location.belowbar, color.green, size=size.normal, text="BUY")
+plotshape(shortCondition and canEnter and strategy.position_size == 0, "Sell Signal", shape.labeldown, location.abovebar, color.red, size=size.normal, text="SELL")
 
-if showLegLabels and swingLowConfirmed and trendDirection == "downtrend"
-    labelText = "Leg " + str.tostring(legCount)
-    labelColor = legCount <= 3 ? color.green : legCount == 4 ? color.orange : color.red
-    label.new(bar_index - swingLookback, na, labelText,
-         xloc=xloc.bar_index, yloc=yloc.belowbar,
-         style=label.style_label_up, color=labelColor, textcolor=color.white, size=size.small)
+// Position lines (only when in position)
+inPos = strategy.position_size != 0
+plot(inPos ? stopLoss : na, "Stop Loss", color.red, 2, plot.style_linebr)
+plot(inPos ? entryPrice : na, "Entry", color.blue, 1, plot.style_linebr)
+plot(inPos and not tp1Hit ? takeProfit1 : na, "TP1", color.green, 1, plot.style_linebr)
+plot(inPos ? takeProfit2 : na, "TP2", color.lime, 2, plot.style_linebr)
 
+// Trend EMA
+plot(trendEma, "Trend EMA", color.new(color.orange, 50), 2)
+
+// Background for trend
+bgcolor(useTrendFilter and isBullTrend ? color.new(color.green, 95) : useTrendFilter and isBearTrend ? color.new(color.red, 95) : na)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ░░░ INFO TABLE ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-var table infoTable = table.new(position.top_right, 2, 15, bgcolor=color.new(color.black, 80), border_width=1)
+var table info = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80))
 
 if barstate.islast
-    // Header
-    table.cell(infoTable, 0, 0, "Zei Strategy", text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 70))
-    table.cell(infoTable, 1, 0, "Status", text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 70))
+    table.cell(info, 0, 0, "Zei Strategy v2", text_color=color.white, text_size=size.small, bgcolor=color.blue)
+    table.cell(info, 1, 0, "Status", text_color=color.white, text_size=size.small, bgcolor=color.blue)
 
-    // Trend
-    table.cell(infoTable, 0, 1, "Trend", text_color=color.white, text_size=size.tiny)
-    trendColor = trendDirection == "uptrend" ? color.green : trendDirection == "downtrend" ? color.red : color.gray
-    table.cell(infoTable, 1, 1, trendDirection, text_color=trendColor, text_size=size.tiny)
+    table.cell(info, 0, 1, "Trend", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 1, isBullTrend ? "BULLISH" : "BEARISH", text_color=isBullTrend ? color.green : color.red, text_size=size.tiny)
 
-    // Leg Count
-    table.cell(infoTable, 0, 2, "Leg Count", text_color=color.white, text_size=size.tiny)
-    legColor = legCount <= 3 ? color.green : legCount == 4 ? color.orange : color.red
-    legStatus = str.tostring(legCount) + (legCount <= 3 ? " (Early)" : legCount == 4 ? " (Late)" : " (Skip!)")
-    table.cell(infoTable, 1, 2, legStatus, text_color=legColor, text_size=size.tiny)
+    table.cell(info, 0, 2, "Structure", text_color=color.white, text_size=size.tiny)
+    structTxt = isHH ? "HH" : isLH ? "LH" : "-"
+    structTxt := structTxt + " / " + (isHL ? "HL" : isLL ? "LL" : "-")
+    table.cell(info, 1, 2, structTxt, text_color=color.yellow, text_size=size.tiny)
 
-    // Pullback
-    table.cell(infoTable, 0, 3, "In Pullback", text_color=color.white, text_size=size.tiny)
-    table.cell(infoTable, 1, 3, inPullback ? "Yes" : "No", text_color=inPullback ? color.green : color.gray, text_size=size.tiny)
+    table.cell(info, 0, 3, "In Long Zone", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 3, inLongZone ? "YES" : "No", text_color=inLongZone ? color.green : color.gray, text_size=size.tiny)
 
-    // HTF Trend
-    table.cell(infoTable, 0, 4, "HTF (" + htfTimeframe + ")", text_color=color.white, text_size=size.tiny)
-    htfColor = htfTrend == "uptrend" ? color.green : htfTrend == "downtrend" ? color.red : color.gray
-    table.cell(infoTable, 1, 4, htfTrend, text_color=htfColor, text_size=size.tiny)
+    table.cell(info, 0, 4, "In Short Zone", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 4, inShortZone ? "YES" : "No", text_color=inShortZone ? color.red : color.gray, text_size=size.tiny)
 
-    // HTF Alignment
-    table.cell(infoTable, 0, 5, "HTF Aligned", text_color=color.white, text_size=size.tiny)
-    htfAligned = (trendDirection == "uptrend" and htfTrend == "uptrend") or (trendDirection == "downtrend" and htfTrend == "downtrend") or htfTrend == "neutral"
-    table.cell(infoTable, 1, 5, htfAligned ? "Yes" : "No", text_color=htfAligned ? color.green : color.red, text_size=size.tiny)
-
-    // Extreme Move
-    table.cell(infoTable, 0, 6, "Extreme Move", text_color=color.white, text_size=size.tiny)
-    extremeStatus = extremeBullMove ? "BULL" : extremeBearMove ? "BEAR" : "None"
-    table.cell(infoTable, 1, 6, extremeStatus, text_color=extremeBullMove or extremeBearMove ? color.orange : color.gray, text_size=size.tiny)
-
-    // Position Info
     if strategy.position_size != 0
-        table.cell(infoTable, 0, 7, "─────", text_color=color.gray, text_size=size.tiny)
-        table.cell(infoTable, 1, 7, "─────", text_color=color.gray, text_size=size.tiny)
+        table.cell(info, 0, 5, "Position", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 5, strategy.position_size > 0 ? "LONG" : "SHORT", text_color=strategy.position_size > 0 ? color.green : color.red, text_size=size.tiny)
 
-        table.cell(infoTable, 0, 8, "Position", text_color=color.white, text_size=size.tiny)
-        table.cell(infoTable, 1, 8, isLong ? "LONG" : "SHORT", text_color=isLong ? color.green : color.red, text_size=size.tiny)
+        table.cell(info, 0, 6, "Entry", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 6, str.tostring(entryPrice, format.mintick), text_color=color.blue, text_size=size.tiny)
 
-        table.cell(infoTable, 0, 9, "Entry", text_color=color.white, text_size=size.tiny)
-        table.cell(infoTable, 1, 9, str.tostring(entryPrice, format.mintick), text_color=color.blue, text_size=size.tiny)
+        table.cell(info, 0, 7, "SL", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 7, str.tostring(stopLoss, format.mintick), text_color=color.red, text_size=size.tiny)
 
-        table.cell(infoTable, 0, 10, "SL", text_color=color.white, text_size=size.tiny)
-        slLabel = tp1Hit ? str.tostring(currentSl, format.mintick) + " (BE)" : str.tostring(currentSl, format.mintick)
-        table.cell(infoTable, 1, 10, slLabel, text_color=color.red, text_size=size.tiny)
-
-        // SL Distance %
-        slDistPct = not na(entryPrice) and not na(currentSl) ? math.abs(entryPrice - currentSl) / entryPrice * 100 : 0
-        table.cell(infoTable, 0, 11, "SL Distance", text_color=color.white, text_size=size.tiny)
-        table.cell(infoTable, 1, 11, str.tostring(slDistPct, "#.##") + "%", text_color=color.orange, text_size=size.tiny)
-
-        // Risk Amount
-        table.cell(infoTable, 0, 12, "Risk/Trade", text_color=color.white, text_size=size.tiny)
-        table.cell(infoTable, 1, 12, str.tostring(riskPerTrade, "#.#") + "% Equity", text_color=color.yellow, text_size=size.tiny)
-
-        table.cell(infoTable, 0, 13, "TP1 Hit", text_color=color.white, text_size=size.tiny)
-        table.cell(infoTable, 1, 13, tp1Hit ? "Yes" : "No", text_color=tp1Hit ? color.green : color.gray, text_size=size.tiny)
-
+        table.cell(info, 0, 8, "TP1 Hit", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 8, tp1Hit ? "YES" : "No", text_color=tp1Hit ? color.green : color.gray, text_size=size.tiny)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ░░░ ALERTS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Statische alertconditions (für TradingView Alert Setup)
-alertcondition(rawLongSignal and allFiltersPassLong, "Long Entry", "BUY Signal - Pullback in Uptrend")
-alertcondition(rawShortSignal and allFiltersPassShort, "Short Entry", "SELL Signal - Pullback in Downtrend")
-alertcondition(rawLongSignal and not allFiltersPassLong, "Filtered Long", "LONG Signal BLOCKED by filters")
-alertcondition(rawShortSignal and not allFiltersPassShort, "Filtered Short", "SHORT Signal BLOCKED by filters")
-alertcondition(tp1Reached, "TP1 Hit", "TP1 Reached - SL moved to Breakeven")
-
-// Dynamische Alerts mit Leg-Info (werden zur Laufzeit ausgelöst)
-if rawLongSignal and allFiltersPassLong and strategy.position_size == 0
-    alert("BUY Signal - Leg " + str.tostring(legCount) + " - " + syminfo.ticker, alert.freq_once_per_bar)
-
-if rawShortSignal and allFiltersPassShort and strategy.position_size == 0
-    alert("SELL Signal - Leg " + str.tostring(legCount) + " - " + syminfo.ticker, alert.freq_once_per_bar)
-
-if tp1Reached
-    alert("TP1 Hit - SL moved to Breakeven - " + syminfo.ticker, alert.freq_once_per_bar)
+alertcondition(longCondition and canEnter and strategy.position_size == 0, "Long Entry", "BUY Signal")
+alertcondition(shortCondition and canEnter and strategy.position_size == 0, "Short Entry", "SELL Signal")
