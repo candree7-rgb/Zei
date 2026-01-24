@@ -5,8 +5,8 @@
 strategy("Zei Pullback Strategy",
      overlay=true,
      initial_capital=10000,
-     default_qty_type=strategy.percent_of_equity,
-     default_qty_value=100,
+     default_qty_type=strategy.cash,
+     default_qty_value=1000,
      commission_type=strategy.commission.percent,
      commission_value=0.06,
      slippage=1,
@@ -443,6 +443,30 @@ var bool isLong = false
 
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ░░░ DYNAMIC POSITION SIZING (2% Risk per Trade) ░░░
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Formel: Position Size = (Equity × Risk%) / SL_Distance_%
+//
+// Beispiel mit 2% Risiko:
+// - Equity: $10,000
+// - Risk Amount: $10,000 × 2% = $200
+// - Entry: $100, SL: $95 → SL_Distance = 5%
+// - Position Value: $200 / 5% = $4,000
+// - Qty: $4,000 / $100 = 40 Coins
+// - Wenn SL hit: 40 × ($100-$95) = $200 Verlust = exakt 2%
+//
+// ══════════════════════════════════════════════════════════════════════════════
+
+calcPositionSize(entry, sl) =>
+    slDistancePct = math.abs(entry - sl) / entry * 100
+    riskAmount = strategy.equity * riskPerTrade / 100
+    positionValue = slDistancePct > 0 ? riskAmount / (slDistancePct / 100) : 0
+    qty = positionValue / entry
+    qty
+
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ░░░ ENTRY LOGIC ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -465,7 +489,10 @@ if rawLongSignal and allFiltersPassLong and strategy.position_size == 0
         tp1Hit := false
         isLong := true
 
-        strategy.entry("Long", strategy.long)
+        // Dynamic Position Sizing: Berechne Qty für exakt 2% Risiko
+        posQty = calcPositionSize(close, proposedSl)
+
+        strategy.entry("Long", strategy.long, qty=posQty)
         strategy.exit("TP1", "Long", qty_percent=tp1Split, limit=tp1Price, stop=currentSl)
 
 // --- SHORT Entry ---
@@ -487,7 +514,10 @@ if rawShortSignal and allFiltersPassShort and strategy.position_size == 0
         tp1Hit := false
         isLong := false
 
-        strategy.entry("Short", strategy.short)
+        // Dynamic Position Sizing: Berechne Qty für exakt 2% Risiko
+        posQty = calcPositionSize(close, proposedSl)
+
+        strategy.entry("Short", strategy.short, qty=posQty)
         strategy.exit("TP1", "Short", qty_percent=tp1Split, limit=tp1Price, stop=currentSl)
 
 
@@ -617,7 +647,7 @@ if showLegLabels and swingLowConfirmed and trendDirection == "downtrend"
 // ░░░ INFO TABLE ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-var table infoTable = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 80), border_width=1)
+var table infoTable = table.new(position.top_right, 2, 15, bgcolor=color.new(color.black, 80), border_width=1)
 
 if barstate.islast
     // Header
@@ -669,8 +699,17 @@ if barstate.islast
         slLabel = tp1Hit ? str.tostring(currentSl, format.mintick) + " (BE)" : str.tostring(currentSl, format.mintick)
         table.cell(infoTable, 1, 10, slLabel, text_color=color.red, text_size=size.tiny)
 
-        table.cell(infoTable, 0, 11, "TP1 Hit", text_color=color.white, text_size=size.tiny)
-        table.cell(infoTable, 1, 11, tp1Hit ? "Yes" : "No", text_color=tp1Hit ? color.green : color.gray, text_size=size.tiny)
+        // SL Distance %
+        slDistPct = not na(entryPrice) and not na(currentSl) ? math.abs(entryPrice - currentSl) / entryPrice * 100 : 0
+        table.cell(infoTable, 0, 11, "SL Distance", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 11, str.tostring(slDistPct, "#.##") + "%", text_color=color.orange, text_size=size.tiny)
+
+        // Risk Amount
+        table.cell(infoTable, 0, 12, "Risk/Trade", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 12, str.tostring(riskPerTrade, "#.#") + "% Equity", text_color=color.yellow, text_size=size.tiny)
+
+        table.cell(infoTable, 0, 13, "TP1 Hit", text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 1, 13, tp1Hit ? "Yes" : "No", text_color=tp1Hit ? color.green : color.gray, text_size=size.tiny)
 
 
 // ══════════════════════════════════════════════════════════════════════════════
