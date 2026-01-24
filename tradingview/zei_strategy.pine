@@ -1,7 +1,7 @@
 // This Pine Script™ is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © Zei Trading Bot - Full Strategy Replication with Signal Generation
 
-//@version=5
+//@version=6
 strategy("Zei Pullback Strategy",
      overlay=true,
      initial_capital=10000,
@@ -636,9 +636,19 @@ if barstate.islast
 // ░░░ ALERTS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-alertcondition(rawLongSignal and allFiltersPassLong, "Long Entry", "BUY Signal - Pullback in Uptrend - Leg " + str.tostring(legCount))
-alertcondition(rawShortSignal and allFiltersPassShort, "Short Entry", "SELL Signal - Pullback in Downtrend - Leg " + str.tostring(legCount))
-alertcondition(rawLongSignal and not allFiltersPassLong, "Filtered Long", "LONG Signal BLOCKED - Leg " + str.tostring(legCount))
-alertcondition(rawShortSignal and not allFiltersPassShort, "Filtered Short", "SHORT Signal BLOCKED - Leg " + str.tostring(legCount))
+// Statische alertconditions (für TradingView Alert Setup)
+alertcondition(rawLongSignal and allFiltersPassLong, "Long Entry", "BUY Signal - Pullback in Uptrend")
+alertcondition(rawShortSignal and allFiltersPassShort, "Short Entry", "SELL Signal - Pullback in Downtrend")
+alertcondition(rawLongSignal and not allFiltersPassLong, "Filtered Long", "LONG Signal BLOCKED by filters")
+alertcondition(rawShortSignal and not allFiltersPassShort, "Filtered Short", "SHORT Signal BLOCKED by filters")
 alertcondition(tp1Reached, "TP1 Hit", "TP1 Reached - SL moved to Breakeven")
-alertcondition(legCount >= 4, "Late Trend Warning", "Warning: Leg " + str.tostring(legCount) + " - Late trend, higher reversal risk!")
+
+// Dynamische Alerts mit Leg-Info (werden zur Laufzeit ausgelöst)
+if rawLongSignal and allFiltersPassLong and strategy.position_size == 0
+    alert("BUY Signal - Leg " + str.tostring(legCount) + " - " + syminfo.ticker, alert.freq_once_per_bar)
+
+if rawShortSignal and allFiltersPassShort and strategy.position_size == 0
+    alert("SELL Signal - Leg " + str.tostring(legCount) + " - " + syminfo.ticker, alert.freq_once_per_bar)
+
+if tp1Reached
+    alert("TP1 Hit - SL moved to Breakeven - " + syminfo.ticker, alert.freq_once_per_bar)
