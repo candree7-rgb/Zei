@@ -1,8 +1,8 @@
 // This Pine Script™ is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// © Zei Trading Bot - Fixed Strategy with Working Entries
+// © Zei Trading Bot - Fixed Strategy v3.1
 
 //@version=6
-strategy("Zei Pullback Strategy v2",
+strategy("Zei Pullback Strategy v3.1",
      overlay=true,
      initial_capital=10000,
      default_qty_type=strategy.percent_of_equity,
@@ -12,7 +12,7 @@ strategy("Zei Pullback Strategy v2",
      slippage=1,
      pyramiding=0,
      calc_on_every_tick=false,
-     process_orders_on_close=true,
+     process_orders_on_close=false,
      max_labels_count=500,
      max_lines_count=500,
      max_boxes_count=500)
@@ -21,22 +21,18 @@ strategy("Zei Pullback Strategy v2",
 // ░░░ INPUTS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// --- Swing Detection ---
 grp_swing = "🔄 Swing Detection"
 swingLen = input.int(5, "Swing Lookback", minval=2, maxval=20, group=grp_swing)
 
-// --- Entry Settings ---
 grp_entry = "📊 Entry Settings"
-fibTop = input.float(0.5, "Fib Zone Top", minval=0.1, maxval=0.9, step=0.05, group=grp_entry, tooltip="Entry zone starts here (retracement from swing)")
-fibBtm = input.float(0.786, "Fib Zone Bottom", minval=0.2, maxval=1.0, step=0.05, group=grp_entry, tooltip="Entry zone ends here")
+fibTop = input.float(0.5, "Fib Zone Top", minval=0.1, maxval=0.9, step=0.05, group=grp_entry)
+fibBtm = input.float(0.786, "Fib Zone Bottom", minval=0.2, maxval=1.0, step=0.05, group=grp_entry)
 requireConfirmation = input.bool(true, "Require Candle Confirmation", group=grp_entry)
 
-// --- Trend Filter ---
 grp_trend = "📈 Trend Filter"
 useTrendFilter = input.bool(true, "Use EMA Trend Filter", group=grp_trend)
 trendEmaLen = input.int(50, "Trend EMA Length", group=grp_trend)
 
-// --- Risk Management ---
 grp_risk = "💰 Risk Management"
 riskPct = input.float(2.0, "Risk %", minval=0.5, maxval=10.0, step=0.5, group=grp_risk)
 slBuffer = input.float(0.5, "SL Buffer %", minval=0.0, maxval=3.0, step=0.1, group=grp_risk)
@@ -44,7 +40,6 @@ tp1Mult = input.float(1.5, "TP1 (R:R)", minval=0.5, maxval=5.0, step=0.1, group=
 tp2Mult = input.float(2.5, "TP2 (R:R)", minval=1.0, maxval=10.0, step=0.1, group=grp_risk)
 tp1Pct = input.int(50, "TP1 Close %", minval=10, maxval=90, group=grp_risk)
 
-// --- Visuals ---
 grp_vis = "👁 Visuals"
 showZones = input.bool(true, "Show Entry Zones", group=grp_vis)
 showSwings = input.bool(true, "Show Swing Points", group=grp_vis)
@@ -57,19 +52,16 @@ zoneExtend = input.int(20, "Zone Extend Bars", minval=5, maxval=100, group=grp_v
 atr = ta.atr(14)
 trendEma = ta.ema(close, trendEmaLen)
 
-// Trend Direction (simple)
 isBullTrend = close > trendEma
 isBearTrend = close < trendEma
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ SWING DETECTION (Using ta.pivothigh/pivotlow) ░░░
+// ░░░ SWING DETECTION ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Detect pivots
 swingHigh = ta.pivothigh(high, swingLen, swingLen)
 swingLow = ta.pivotlow(low, swingLen, swingLen)
 
-// Track swing values
 var float lastSwingHigh = na
 var float lastSwingLow = na
 var int lastSwingHighBar = na
@@ -77,19 +69,16 @@ var int lastSwingLowBar = na
 var float prevSwingHigh = na
 var float prevSwingLow = na
 
-// Update on new swing high
 if not na(swingHigh)
     prevSwingHigh := lastSwingHigh
     lastSwingHigh := swingHigh
     lastSwingHighBar := bar_index - swingLen
 
-// Update on new swing low
 if not na(swingLow)
     prevSwingLow := lastSwingLow
     lastSwingLow := swingLow
     lastSwingLowBar := bar_index - swingLen
 
-// Plot swing points
 plotshape(showSwings and not na(swingHigh), "Swing High", shape.triangledown, location.abovebar, color.new(color.red, 20), offset=-swingLen, size=size.tiny)
 plotshape(showSwings and not na(swingLow), "Swing Low", shape.triangleup, location.belowbar, color.new(color.green, 20), offset=-swingLen, size=size.tiny)
 
@@ -97,20 +86,16 @@ plotshape(showSwings and not na(swingLow), "Swing Low", shape.triangleup, locati
 // ░░░ STRUCTURE DETECTION ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Higher High / Higher Low (Bullish Structure)
 isHH = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh > prevSwingHigh
 isHL = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow > prevSwingLow
-
-// Lower High / Lower Low (Bearish Structure)
 isLH = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh < prevSwingHigh
 isLL = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow < prevSwingLow
 
-// Trend based on structure (more relaxed - only need one condition)
 bullishStructure = isHH or isHL
 bearishStructure = isLH or isLL
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ ENTRY ZONES (Fixed Boxes) ░░░
+// ░░░ ENTRY ZONES ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
 var box longZoneBox = na
@@ -122,37 +107,25 @@ var float shortZoneBtm = na
 var int longZoneBar = na
 var int shortZoneBar = na
 
-// Create LONG zone after swing low (for buying the pullback)
 if not na(swingLow) and not na(lastSwingHigh)
-    // Zone from recent high to low, fib retracement area
     zoneRange = lastSwingHigh - swingLow
-    longZoneTop := swingLow + zoneRange * (1 - fibTop)  // Higher fib = lower price for long
+    longZoneTop := swingLow + zoneRange * (1 - fibTop)
     longZoneBtm := swingLow + zoneRange * (1 - fibBtm)
     longZoneBar := bar_index - swingLen
-
-    // Delete old box
     if not na(longZoneBox)
         box.delete(longZoneBox)
-
-    // Create new fixed box
     if showZones
         longZoneBox := box.new(longZoneBar, longZoneTop, longZoneBar + zoneExtend, longZoneBtm,
              border_color=color.new(color.green, 50), bgcolor=color.new(color.green, 85),
              border_width=1, border_style=line.style_dashed)
 
-// Create SHORT zone after swing high (for selling the pullback)
 if not na(swingHigh) and not na(lastSwingLow)
-    // Zone from recent low to high, fib retracement area
     zoneRange = swingHigh - lastSwingLow
-    shortZoneBtm := swingHigh - zoneRange * (1 - fibTop)  // Higher fib = higher price for short
+    shortZoneBtm := swingHigh - zoneRange * (1 - fibTop)
     shortZoneTop := swingHigh - zoneRange * (1 - fibBtm)
     shortZoneBar := bar_index - swingLen
-
-    // Delete old box
     if not na(shortZoneBox)
         box.delete(shortZoneBox)
-
-    // Create new fixed box
     if showZones
         shortZoneBox := box.new(shortZoneBar, shortZoneTop, shortZoneBar + zoneExtend, shortZoneBtm,
              border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 85),
@@ -162,29 +135,24 @@ if not na(swingHigh) and not na(lastSwingLow)
 // ░░░ ENTRY SIGNALS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Price in zone checks
 inLongZone = not na(longZoneTop) and not na(longZoneBtm) and low <= longZoneTop and close >= longZoneBtm
 inShortZone = not na(shortZoneTop) and not na(shortZoneBtm) and high >= shortZoneBtm and close <= shortZoneTop
 
-// Candle confirmation
 bullishCandle = close > open
 bearishCandle = close < open
 
-// Trend filter
 trendAllowsLong = not useTrendFilter or isBullTrend
 trendAllowsShort = not useTrendFilter or isBearTrend
 
-// Final signals
 longCondition = inLongZone and trendAllowsLong and (not requireConfirmation or bullishCandle)
 shortCondition = inShortZone and trendAllowsShort and (not requireConfirmation or bearishCandle)
 
-// Prevent multiple entries
 var int lastEntryBar = 0
 minBarsBetween = 3
 canEnter = bar_index - lastEntryBar > minBarsBetween
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ POSITION SIZING & RISK ░░░
+// ░░░ POSITION SIZING ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
 calcQty(entryP, slP) =>
@@ -193,126 +161,258 @@ calcQty(entryP, slP) =>
     slDist > 0 ? riskAmt / slDist : 0
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ TRADE MANAGEMENT ░░░
+// ░░░ TRADE STATE ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
 var float entryPrice = na
 var float stopLoss = na
+var float currentSL = na  // Tracks actual SL (original or BE)
 var float takeProfit1 = na
 var float takeProfit2 = na
 var bool isLong = false
 var bool tp1Hit = false
+var int entryBar = na
+var float initialQty = na
+
+// Fixed lines for current trade
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line beLineAfterTP1 = na
+var label entryLabel = na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ░░░ ENTRY LOGIC ░░░
+// ══════════════════════════════════════════════════════════════════════════════
 
 // --- LONG ENTRY ---
 if longCondition and canEnter and strategy.position_size == 0 and not na(lastSwingLow)
     entryPrice := close
     stopLoss := lastSwingLow * (1 - slBuffer / 100)
+    currentSL := stopLoss
     riskDist = entryPrice - stopLoss
     takeProfit1 := entryPrice + riskDist * tp1Mult
     takeProfit2 := entryPrice + riskDist * tp2Mult
     isLong := true
     tp1Hit := false
     lastEntryBar := bar_index
+    entryBar := bar_index
 
     qty = calcQty(entryPrice, stopLoss)
+    initialQty := qty
     strategy.entry("Long", strategy.long, qty=qty)
+
+    // Delete old lines
+    if not na(slLine)
+        line.delete(slLine)
+    if not na(tp1Line)
+        line.delete(tp1Line)
+    if not na(tp2Line)
+        line.delete(tp2Line)
+    if not na(beLineAfterTP1)
+        line.delete(beLineAfterTP1)
+    if not na(entryLabel)
+        label.delete(entryLabel)
+
+    // Create fixed lines at entry bar
+    slLine := line.new(bar_index, stopLoss, bar_index + 100, stopLoss, color=color.red, width=2, style=line.style_solid)
+    tp1Line := line.new(bar_index, takeProfit1, bar_index + 100, takeProfit1, color=color.green, width=1, style=line.style_dashed)
+    tp2Line := line.new(bar_index, takeProfit2, bar_index + 100, takeProfit2, color=color.lime, width=2, style=line.style_solid)
+    entryLabel := label.new(bar_index, entryPrice, "BUY\n" + str.tostring(entryPrice, format.mintick),
+         style=label.style_label_right, color=color.green, textcolor=color.white, size=size.small)
 
 // --- SHORT ENTRY ---
 if shortCondition and canEnter and strategy.position_size == 0 and not na(lastSwingHigh)
     entryPrice := close
     stopLoss := lastSwingHigh * (1 + slBuffer / 100)
+    currentSL := stopLoss
     riskDist = stopLoss - entryPrice
     takeProfit1 := entryPrice - riskDist * tp1Mult
     takeProfit2 := entryPrice - riskDist * tp2Mult
     isLong := false
     tp1Hit := false
     lastEntryBar := bar_index
+    entryBar := bar_index
 
     qty = calcQty(entryPrice, stopLoss)
+    initialQty := qty
     strategy.entry("Short", strategy.short, qty=qty)
 
-// --- EXIT MANAGEMENT ---
-if strategy.position_size > 0  // Long position
-    strategy.exit("TP1", "Long", qty_percent=tp1Pct, limit=takeProfit1, stop=stopLoss)
-    if high >= takeProfit1 and not tp1Hit
-        tp1Hit := true
-        stopLoss := entryPrice  // Move to breakeven
-    if tp1Hit
-        strategy.exit("TP2", "Long", qty_percent=100, limit=takeProfit2, stop=stopLoss)
+    // Delete old lines
+    if not na(slLine)
+        line.delete(slLine)
+    if not na(tp1Line)
+        line.delete(tp1Line)
+    if not na(tp2Line)
+        line.delete(tp2Line)
+    if not na(beLineAfterTP1)
+        line.delete(beLineAfterTP1)
+    if not na(entryLabel)
+        label.delete(entryLabel)
 
-if strategy.position_size < 0  // Short position
-    strategy.exit("TP1", "Short", qty_percent=tp1Pct, limit=takeProfit1, stop=stopLoss)
-    if low <= takeProfit1 and not tp1Hit
-        tp1Hit := true
-        stopLoss := entryPrice  // Move to breakeven
-    if tp1Hit
-        strategy.exit("TP2", "Short", qty_percent=100, limit=takeProfit2, stop=stopLoss)
+    // Create fixed lines at entry bar
+    slLine := line.new(bar_index, stopLoss, bar_index + 100, stopLoss, color=color.red, width=2, style=line.style_solid)
+    tp1Line := line.new(bar_index, takeProfit1, bar_index + 100, takeProfit1, color=color.green, width=1, style=line.style_dashed)
+    tp2Line := line.new(bar_index, takeProfit2, bar_index + 100, takeProfit2, color=color.lime, width=2, style=line.style_solid)
+    entryLabel := label.new(bar_index, entryPrice, "SELL\n" + str.tostring(entryPrice, format.mintick),
+         style=label.style_label_right, color=color.red, textcolor=color.white, size=size.small)
 
-// Reset on position close
+// ══════════════════════════════════════════════════════════════════════════════
+// ░░░ EXIT MANAGEMENT - KEY FIX ░░░
+// ══════════════════════════════════════════════════════════════════════════════
+
+// For LONG positions
+if strategy.position_size > 0
+    if not tp1Hit
+        // Initial exits: TP1 partial + full position SL
+        strategy.exit("TP1_Long", "Long", qty_percent=tp1Pct, limit=takeProfit1, stop=currentSL)
+        strategy.exit("TP2_Long", "Long", limit=takeProfit2, stop=currentSL)
+
+        // Check if TP1 was hit (price touched TP1 level)
+        if high >= takeProfit1
+            tp1Hit := true
+            currentSL := entryPrice  // Move to breakeven
+
+            // Add BE line
+            if not na(beLineAfterTP1)
+                line.delete(beLineAfterTP1)
+            beLineAfterTP1 := line.new(bar_index, entryPrice, bar_index + 50, entryPrice,
+                 color=color.blue, width=2, style=line.style_dotted)
+
+            // Add TP1 hit label
+            label.new(bar_index, takeProfit1, "TP1\n" + str.tostring(takeProfit1, format.mintick),
+                 style=label.style_label_down, color=color.green, textcolor=color.white, size=size.small)
+    else
+        // After TP1: Only remaining position with BE stop
+        strategy.exit("BE_Long", "Long", limit=takeProfit2, stop=currentSL)
+
+// For SHORT positions
+if strategy.position_size < 0
+    if not tp1Hit
+        // Initial exits: TP1 partial + full position SL
+        strategy.exit("TP1_Short", "Short", qty_percent=tp1Pct, limit=takeProfit1, stop=currentSL)
+        strategy.exit("TP2_Short", "Short", limit=takeProfit2, stop=currentSL)
+
+        // Check if TP1 was hit (price touched TP1 level)
+        if low <= takeProfit1
+            tp1Hit := true
+            currentSL := entryPrice  // Move to breakeven
+
+            // Add BE line
+            if not na(beLineAfterTP1)
+                line.delete(beLineAfterTP1)
+            beLineAfterTP1 := line.new(bar_index, entryPrice, bar_index + 50, entryPrice,
+                 color=color.blue, width=2, style=line.style_dotted)
+
+            // Add TP1 hit label
+            label.new(bar_index, takeProfit1, "TP1\n" + str.tostring(takeProfit1, format.mintick),
+                 style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+    else
+        // After TP1: Only remaining position with BE stop
+        strategy.exit("BE_Short", "Short", limit=takeProfit2, stop=currentSL)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ░░░ UPDATE LINES WHILE IN POSITION ░░░
+// ══════════════════════════════════════════════════════════════════════════════
+
+if strategy.position_size != 0 and not na(slLine)
+    line.set_x2(slLine, bar_index + 10)
+    line.set_x2(tp1Line, bar_index + 10)
+    line.set_x2(tp2Line, bar_index + 10)
+    if not na(beLineAfterTP1)
+        line.set_x2(beLineAfterTP1, bar_index + 10)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ░░░ POSITION CLOSED ░░░
+// ══════════════════════════════════════════════════════════════════════════════
+
 if strategy.position_size == 0 and strategy.position_size[1] != 0
+    lastTradeIdx = strategy.closedtrades - 1
+    if lastTradeIdx >= 0
+        exitPrice = strategy.closedtrades.exit_price(lastTradeIdx)
+        exitBar = strategy.closedtrades.exit_bar_index(lastTradeIdx)
+        wasLong = strategy.closedtrades.size(lastTradeIdx) > 0
+
+        labelText = ""
+        labelColor = color.gray
+
+        // Determine exit type based on exit price
+        if wasLong
+            if exitPrice >= takeProfit2 * 0.999  // Small tolerance
+                labelText := "TP2\n" + str.tostring(exitPrice, format.mintick)
+                labelColor := color.lime
+            else if tp1Hit and exitPrice >= entryPrice * 0.999
+                labelText := "BE\n" + str.tostring(exitPrice, format.mintick)
+                labelColor := color.blue
+            else
+                labelText := "SL\n" + str.tostring(exitPrice, format.mintick)
+                labelColor := color.red
+        else  // Short
+            if exitPrice <= takeProfit2 * 1.001
+                labelText := "TP2\n" + str.tostring(exitPrice, format.mintick)
+                labelColor := color.lime
+            else if tp1Hit and exitPrice <= entryPrice * 1.001
+                labelText := "BE\n" + str.tostring(exitPrice, format.mintick)
+                labelColor := color.blue
+            else
+                labelText := "SL\n" + str.tostring(exitPrice, format.mintick)
+                labelColor := color.red
+
+        label.new(exitBar, exitPrice, labelText, style=label.style_label_left, color=labelColor, textcolor=color.white, size=size.small)
+
+    // End lines at exit bar
+    if not na(slLine)
+        line.set_x2(slLine, bar_index)
+    if not na(tp1Line)
+        line.set_x2(tp1Line, bar_index)
+    if not na(tp2Line)
+        line.set_x2(tp2Line, bar_index)
+    if not na(beLineAfterTP1)
+        line.set_x2(beLineAfterTP1, bar_index)
+
+    // Reset state
     entryPrice := na
     stopLoss := na
+    currentSL := na
     takeProfit1 := na
     takeProfit2 := na
     tp1Hit := false
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ░░░ VISUALIZATION ░░░
+// ░░░ MINIMAL VISUALIZATION ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Entry signals
-plotshape(longCondition and canEnter and strategy.position_size == 0, "Buy Signal", shape.labelup, location.belowbar, color.green, size=size.normal, text="BUY")
-plotshape(shortCondition and canEnter and strategy.position_size == 0, "Sell Signal", shape.labeldown, location.abovebar, color.red, size=size.normal, text="SELL")
-
-// Position lines (only when in position)
-inPos = strategy.position_size != 0
-plot(inPos ? stopLoss : na, "Stop Loss", color.red, 2, plot.style_linebr)
-plot(inPos ? entryPrice : na, "Entry", color.blue, 1, plot.style_linebr)
-plot(inPos and not tp1Hit ? takeProfit1 : na, "TP1", color.green, 1, plot.style_linebr)
-plot(inPos ? takeProfit2 : na, "TP2", color.lime, 2, plot.style_linebr)
-
-// Trend EMA
 plot(trendEma, "Trend EMA", color.new(color.orange, 50), 2)
-
-// Background for trend
-bgcolor(useTrendFilter and isBullTrend ? color.new(color.green, 95) : useTrendFilter and isBearTrend ? color.new(color.red, 95) : na)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ░░░ INFO TABLE ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-var table info = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80))
+var table info = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80))
 
 if barstate.islast
-    table.cell(info, 0, 0, "Zei Strategy v2", text_color=color.white, text_size=size.small, bgcolor=color.blue)
-    table.cell(info, 1, 0, "Status", text_color=color.white, text_size=size.small, bgcolor=color.blue)
+    table.cell(info, 0, 0, "Zei v3.1", text_color=color.white, text_size=size.small, bgcolor=color.blue)
+    table.cell(info, 1, 0, "BE Fix", text_color=color.white, text_size=size.small, bgcolor=color.blue)
 
     table.cell(info, 0, 1, "Trend", text_color=color.white, text_size=size.tiny)
-    table.cell(info, 1, 1, isBullTrend ? "BULLISH" : "BEARISH", text_color=isBullTrend ? color.green : color.red, text_size=size.tiny)
-
-    table.cell(info, 0, 2, "Structure", text_color=color.white, text_size=size.tiny)
-    structTxt = isHH ? "HH" : isLH ? "LH" : "-"
-    structTxt := structTxt + " / " + (isHL ? "HL" : isLL ? "LL" : "-")
-    table.cell(info, 1, 2, structTxt, text_color=color.yellow, text_size=size.tiny)
-
-    table.cell(info, 0, 3, "In Long Zone", text_color=color.white, text_size=size.tiny)
-    table.cell(info, 1, 3, inLongZone ? "YES" : "No", text_color=inLongZone ? color.green : color.gray, text_size=size.tiny)
-
-    table.cell(info, 0, 4, "In Short Zone", text_color=color.white, text_size=size.tiny)
-    table.cell(info, 1, 4, inShortZone ? "YES" : "No", text_color=inShortZone ? color.red : color.gray, text_size=size.tiny)
+    table.cell(info, 1, 1, isBullTrend ? "BULL" : "BEAR", text_color=isBullTrend ? color.green : color.red, text_size=size.tiny)
 
     if strategy.position_size != 0
-        table.cell(info, 0, 5, "Position", text_color=color.white, text_size=size.tiny)
-        table.cell(info, 1, 5, strategy.position_size > 0 ? "LONG" : "SHORT", text_color=strategy.position_size > 0 ? color.green : color.red, text_size=size.tiny)
+        table.cell(info, 0, 2, "Pos", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 2, strategy.position_size > 0 ? "LONG" : "SHORT", text_color=strategy.position_size > 0 ? color.green : color.red, text_size=size.tiny)
 
-        table.cell(info, 0, 6, "Entry", text_color=color.white, text_size=size.tiny)
-        table.cell(info, 1, 6, str.tostring(entryPrice, format.mintick), text_color=color.blue, text_size=size.tiny)
+        table.cell(info, 0, 3, "Entry", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 3, str.tostring(entryPrice, format.mintick), text_color=color.blue, text_size=size.tiny)
 
-        table.cell(info, 0, 7, "SL", text_color=color.white, text_size=size.tiny)
-        table.cell(info, 1, 7, str.tostring(stopLoss, format.mintick), text_color=color.red, text_size=size.tiny)
+        table.cell(info, 0, 4, "SL", text_color=color.white, text_size=size.tiny)
+        slText = tp1Hit ? "BE: " + str.tostring(currentSL, format.mintick) : str.tostring(currentSL, format.mintick)
+        table.cell(info, 1, 4, slText, text_color=tp1Hit ? color.blue : color.red, text_size=size.tiny)
 
-        table.cell(info, 0, 8, "TP1 Hit", text_color=color.white, text_size=size.tiny)
-        table.cell(info, 1, 8, tp1Hit ? "YES" : "No", text_color=tp1Hit ? color.green : color.gray, text_size=size.tiny)
+        table.cell(info, 0, 5, "TP1", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 5, tp1Hit ? "HIT" : str.tostring(takeProfit1, format.mintick), text_color=tp1Hit ? color.green : color.gray, text_size=size.tiny)
+
+        table.cell(info, 0, 6, "TP2", text_color=color.white, text_size=size.tiny)
+        table.cell(info, 1, 6, str.tostring(takeProfit2, format.mintick), text_color=color.lime, text_size=size.tiny)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ░░░ ALERTS ░░░
