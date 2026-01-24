@@ -200,7 +200,7 @@ var float entryPrice = na
 var float stopLoss = na
 var float takeProfit1 = na
 var float takeProfit2 = na
-var bool isLong = na
+var bool isLong = false
 var bool tp1Hit = false
 
 // --- LONG ENTRY ---
