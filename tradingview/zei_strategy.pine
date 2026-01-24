@@ -573,42 +573,12 @@ plotshape(rawShortSignal and allFiltersPassShort and strategy.position_size == 0
 plotshape(showFilteredSignals and rawLongSignal and not allFiltersPassLong, "Filtered Long", shape.labelup, location.belowbar, color.new(color.gray, 50), size=size.tiny, text="x")
 plotshape(showFilteredSignals and rawShortSignal and not allFiltersPassShort, "Filtered Short", shape.labeldown, location.abovebar, color.new(color.gray, 50), size=size.tiny, text="x")
 
-// SL/TP Linien während Position - nur vom Entry bis aktuelle Bar
-var line slLine = na
-var line tp1Line = na
-var line tp2Line = na
-var line entryLine = na
-var int positionStartBar = na
-
-// Position Start tracken
-if strategy.position_size != 0 and strategy.position_size[1] == 0
-    positionStartBar := bar_index
-
-// Linien aktualisieren während Position offen
-if strategy.position_size != 0 and not na(positionStartBar)
-    // Alte Linien löschen
-    line.delete(slLine)
-    line.delete(entryLine)
-    line.delete(tp1Line)
-    line.delete(tp2Line)
-
-    // Neue Linien vom Entry-Bar bis jetzt
-    slLine := line.new(positionStartBar, currentSl, bar_index, currentSl, color=color.red, width=2, style=line.style_solid)
-    entryLine := line.new(positionStartBar, entryPrice, bar_index, entryPrice, color=color.blue, width=1, style=line.style_dashed)
-
-    if not tp1Hit and not na(tp1Price)
-        tp1Line := line.new(positionStartBar, tp1Price, bar_index, tp1Price, color=color.green, width=1, style=line.style_dotted)
-
-    if not na(tp2Price)
-        tp2Line := line.new(positionStartBar, tp2Price, bar_index, tp2Price, color=color.lime, width=2, style=line.style_dotted)
-
-// Linien löschen wenn Position geschlossen
-if strategy.position_size == 0 and strategy.position_size[1] != 0
-    line.delete(slLine)
-    line.delete(tp1Line)
-    line.delete(tp2Line)
-    line.delete(entryLine)
-    positionStartBar := na
+// SL/TP Linien während Position (nur wenn Position offen)
+inPosition = strategy.position_size != 0
+plot(inPosition ? currentSl : na, "Stop Loss", color.red, 2, plot.style_linebr)
+plot(inPosition ? entryPrice : na, "Entry", color.blue, 1, plot.style_linebr)
+plot(inPosition and not tp1Hit ? tp1Price : na, "TP1", color.green, 1, plot.style_linebr)
+plot(inPosition ? tp2Price : na, "TP2", color.lime, 2, plot.style_linebr)
 
 // EMAs
 plot(ema20, "EMA 20", color.new(color.yellow, 70), linewidth=1)
@@ -623,23 +593,19 @@ bgcolor(htfEnabled and htfTrend == "uptrend" ? color.new(color.green, 95) : htfE
 // ░░░ LEG LABELS ░░░
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Leg Count Labels an Swing Points - fixiert mit yloc.price für stabile Position
+// Leg Count Labels an Swing Points - verwende yloc.abovebar/belowbar für stabile Position
 if showLegLabels and swingHighConfirmed and trendDirection == "uptrend"
     labelText = "Leg " + str.tostring(legCount)
     labelColor = legCount <= 3 ? color.green : legCount == 4 ? color.orange : color.red
-    // Verwende yloc.price statt y-Wert direkt für stabile Positionierung
-    labelY = high[swingLookback] + atr * 0.5  // Etwas über dem High
-    label.new(bar_index - swingLookback, labelY, labelText,
-         xloc=xloc.bar_index, yloc=yloc.price,
+    label.new(bar_index - swingLookback, na, labelText,
+         xloc=xloc.bar_index, yloc=yloc.abovebar,
          style=label.style_label_down, color=labelColor, textcolor=color.white, size=size.small)
 
 if showLegLabels and swingLowConfirmed and trendDirection == "downtrend"
     labelText = "Leg " + str.tostring(legCount)
     labelColor = legCount <= 3 ? color.green : legCount == 4 ? color.orange : color.red
-    // Verwende yloc.price für stabile Positionierung
-    labelY = low[swingLookback] - atr * 0.5  // Etwas unter dem Low
-    label.new(bar_index - swingLookback, labelY, labelText,
-         xloc=xloc.bar_index, yloc=yloc.price,
+    label.new(bar_index - swingLookback, na, labelText,
+         xloc=xloc.bar_index, yloc=yloc.belowbar,
          style=label.style_label_up, color=labelColor, textcolor=color.white, size=size.small)
 
 
