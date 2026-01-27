@@ -201,7 +201,7 @@ HTF_ALIGNMENT_ENABLED = _get_bool("HTF_ALIGNMENT_ENABLED", "true")
 # After extreme pump → skip SHORT (don't short the rocket)
 
 # Enable/disable extreme move filter
-EXTREME_MOVE_FILTER_ENABLED = _get_bool("EXTREME_MOVE_FILTER_ENABLED", "true")
+EXTREME_MOVE_FILTER_ENABLED = _get_bool("EXTREME_MOVE_FILTER_ENABLED", "false")
 
 # Block if recent candle move > X * ATR (3.0 = 3x normal volatility)
 # Higher = less sensitive (only extreme crashes)
